@@ -1,0 +1,526 @@
+/* Bus Tracking Page Styles */
+
+.tracking-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: #f9fafb;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
+    Ubuntu, Cantarell, sans-serif;
+}
+
+/* Map Wrapper */
+.map-wrapper {
+  position: relative;
+  flex: 1;
+  min-height: 50vh;
+}
+
+.tracking-map {
+  width: 100%;
+  height: 100%;
+}
+
+/* Status Badge - Live Indicator */
+.status-badge.live {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  background: white;
+  border: 2px solid #7C3AED;
+  color: #7C3AED;
+  padding: 8px 16px;
+  border-radius: 24px;
+  font-weight: 600;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  z-index: 1000;
+}
+
+.status-badge.live .pulse {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  background: #7C3AED;
+  border-radius: 50%;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(124, 58, 237, 0.7);
+  }
+  70% {
+    box-shadow: 0 0 0 10px rgba(124, 58, 237, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(124, 58, 237, 0);
+  }
+}
+
+/* Info Card */
+.info-card {
+  background: white;
+  border-top: 1px solid #e5e7eb;
+  overflow-y: auto;
+  max-height: 50vh;
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.08);
+}
+
+/* Bus Header */
+.bus-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px;
+  border-bottom: 1px solid #f3f4f6;
+}
+
+.bus-header h2 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 700;
+  color: #1f2937;
+}
+
+.bus-header .route {
+  margin: 4px 0 0 0;
+  font-size: 14px;
+  color: #6b7280;
+}
+
+.status {
+  padding: 8px 16px;
+  border-radius: 24px;
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.status-arriving {
+  background: #FEF3C7;
+  color: #92400E;
+}
+
+.status-on_the_way {
+  background: #E9D5FF;
+  color: #581C87;
+}
+
+.status-offline {
+  background: #FEE2E2;
+  color: #991B1B;
+}
+
+/* Section */
+.section {
+  padding: 16px 20px;
+  border-bottom: 1px solid #f3f4f6;
+}
+
+.section h3 {
+  margin: 0 0 12px 0;
+  font-size: 14px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: #6b7280;
+  letter-spacing: 0.5px;
+}
+
+/* Next Stop Section */
+.next-stop-section {
+  background: #f3f4f6;
+}
+
+.stop-details {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.stop-name-large {
+  font-size: 18px;
+  font-weight: 700;
+  color: #1f2937;
+}
+
+.metrics {
+  display: flex;
+  gap: 16px;
+}
+
+.metric {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.metric .label {
+  font-size: 12px;
+  font-weight: 500;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.metric .value {
+  font-size: 20px;
+  font-weight: 700;
+  color: #1f2937;
+}
+
+.metric .value.highlight {
+  color: #7C3AED;
+}
+
+/* Current Stop Section */
+.current-stop-section {
+}
+
+.stop-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.stop-info .stop-name {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.stop-info .distance {
+  margin: 0;
+  font-size: 14px;
+  color: #6b7280;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  background: #FEF3C7;
+  color: #92400E;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.badge.approaching {
+  animation: pulseText 1s infinite;
+}
+
+@keyframes pulseText {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+/* Bus Info Section */
+.bus-details-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.detail {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.detail .label {
+  font-size: 12px;
+  font-weight: 500;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.detail .value {
+  font-size: 16px;
+  font-weight: 700;
+  color: #1f2937;
+}
+
+/* Crossed Stops Section */
+.crossed-stops-section {
+}
+
+.stops-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.stop-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  background: #f9fafb;
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+.stop-item.crossed {
+  opacity: 0.7;
+}
+
+.stop-item .stop-number {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: #e0e7ff;
+  color: #4f46e5;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.stop-item.crossed .stop-number {
+  background: #dcfce7;
+  color: #16a34a;
+}
+
+.stop-item .stop-name {
+  flex: 1;
+  color: #1f2937;
+  font-weight: 500;
+}
+
+/* Refresh Info */
+.refresh-info {
+  padding: 12px 20px;
+  text-align: center;
+  background: #f9fafb;
+  border-top: 1px solid #f3f4f6;
+  font-size: 12px;
+  color: #9ca3af;
+}
+
+/* Loading State */
+.loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 16px;
+}
+
+.spinner {
+  width: 48px;
+  height: 48px;
+  border: 4px solid #e5e7eb;
+  border-top-color: #7C3AED;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.loading p {
+  color: #6b7280;
+  font-size: 14px;
+  margin: 0;
+}
+
+/* Error State */
+.error-message {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 16px;
+  padding: 20px;
+}
+
+.error-message p {
+  color: #ef4444;
+  font-size: 16px;
+  margin: 0;
+  text-align: center;
+}
+
+.error-message button {
+  padding: 10px 24px;
+  background: #7C3AED;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.error-message button:hover {
+  background: #6d28d9;
+}
+
+/* Popup Content */
+.popup-content {
+  padding: 8px;
+}
+
+.popup-content p {
+  margin: 4px 0;
+  font-size: 14px;
+}
+
+.popup-content .bus-name {
+  font-weight: 700;
+  color: #1f2937;
+}
+
+.popup-content .route-name {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.popup-content .status-badge {
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 11px;
+}
+
+.popup-content .speed {
+  color: #7C3AED;
+  font-weight: 600;
+}
+
+.popup-content .stop-name {
+  font-weight: 700;
+  color: #1f2937;
+}
+
+.popup-content .distance {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.popup-content .eta {
+  color: #7C3AED;
+  font-weight: 600;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .tracking-container {
+    flex-direction: column;
+  }
+
+  .map-wrapper {
+    min-height: 40vh;
+  }
+
+  .info-card {
+    max-height: 60vh;
+  }
+
+  .bus-header {
+    padding: 16px;
+  }
+
+  .bus-header h2 {
+    font-size: 20px;
+  }
+
+  .status-badge.live {
+    top: 12px;
+    right: 12px;
+    padding: 6px 12px;
+    font-size: 12px;
+  }
+
+  .bus-details-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .section {
+    padding: 12px 16px;
+  }
+
+  .metric .value {
+    font-size: 18px;
+  }
+}
+
+@media (max-width: 480px) {
+  .bus-header h2 {
+    font-size: 18px;
+  }
+
+  .stop-name-large {
+    font-size: 16px;
+  }
+
+  .metric .value {
+    font-size: 16px;
+  }
+
+  .stop-info {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .metrics {
+    flex-direction: column;
+    gap: 12px;
+  }
+}
+
+/* Leaflet overrides */
+.leaflet-pane,
+.leaflet-tile,
+.leaflet-marker-shadow,
+.leaflet-tile-pane,
+.leaflet-overlay-pane svg,
+.leaflet-zoom-box,
+.leaflet-image-layer {
+  position: absolute;
+}
+
+.leaflet-container {
+  overflow: hidden;
+  outline: 0;
+}
+
+.leaflet-tile,
+.leaflet-marker-shadow {
+  border: 0 solid;
+}
+
+.leaflet-tile {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.leaflet-smartContainer {
+  text-align: right;
+}
+
+.leaflet-bottom,
+.leaflet-top {
+  z-index: 999;
+}

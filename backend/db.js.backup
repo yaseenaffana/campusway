@@ -1,0 +1,45 @@
+import mssql from 'mssql';
+import dotenv from 'dotenv';
+import { createMockConnection, mockSql } from './mockDatabase.js';
+
+dotenv.config();
+
+const dbConfig = {
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  server: process.env.DB_SERVER,
+  database: process.env.DB_NAME,
+  port: parseInt(process.env.DB_PORT, 10),
+  options: {
+    encrypt: false, // Use true for Azure SQL Database, false for local dev
+    trustServerCertificate: true, // Change to true for local dev / self-signed certs
+  },
+  pool: {
+    max: 10,
+    min: 0,
+    idleTimeoutMillis: 30000
+  }
+};
+
+let pool = null;
+let useMockDb = false;
+
+export const getPool = async () => {
+  if (pool) {
+    return pool;
+  }
+  try {
+    pool = await new mssql.ConnectionPool(dbConfig).connect();
+    console.log('✅ MSSQL Connected Successfully');
+    useMockDb = false;
+    return pool;
+  } catch (err) {
+    console.error('⚠️  Database Connection Failed:', err.message);
+    console.log('📝 Using Mock Database for Development');
+    useMockDb = true;
+    pool = createMockConnection();
+    return pool;
+  }
+};
+
+export const sql = useMockDb ? mockSql : mssql;

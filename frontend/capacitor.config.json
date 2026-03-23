@@ -1,0 +1,11 @@
+{
+  "appId": "com.campusway.app",
+  "appName": "MZSJS BUZZ",
+  "webDir": "dist",
+  "android": {
+    "allowMixedContent": true
+  },
+  "server": {
+    "cleartext": true
+  }
+}
