@@ -47,15 +47,15 @@ Admins can:
 |<img width="1060" height="1484" alt="WhatsApp Image 2026-08-20 at 11 45 37 AM (1)" src="https://github.com/user-attachments/assets/22c8cf32-ae07-4837-a7af-0413a0504e00" />
 |
 
-| Admin Panel |
+<!--| Admin Panel |
 |-----------|
-| *(add screenshot here)* |
+| *(add screenshot here)* |-->
 
 ---
 
 # ✨ Features
 
-## 🌍 Live Fleet Tracking
+##  Live Fleet Tracking
 
 - Real-time location updates over Socket.IO
 - Covers a 19-bus fleet
@@ -64,7 +64,7 @@ Admins can:
 
 ---
 
-## 🔐 Authentication & Roles
+##  Authentication & Roles
 
 - JWT-based login for drivers and admins
 - Role-based access (student / driver / admin)
@@ -72,7 +72,7 @@ Admins can:
 
 ---
 
-## 🚍 Driver Tools
+##  Driver Tools
 
 - Start/end trip controls
 - Live GPS broadcasting
@@ -81,7 +81,7 @@ Admins can:
 
 ---
 
-## 🛠 Admin Tools
+##  Admin Tools
 
 - Bus fleet management
 - Login activity & audit review
@@ -89,7 +89,7 @@ Admins can:
 
 ---
 
-## 🤖 AI & Assistance
+##  AI & Assistance
 
 - Gemini AI integration for route assistance
 - In-app chat support
@@ -97,14 +97,14 @@ Admins can:
 
 ---
 
-## 📱 Mobile
+##  Mobile
 
 - Android packaging via Capacitor
 - Dedicated driver mobile app scaffolded with Expo Router (in progress)
 
 ---
 
-# 🛠 Tech Stack
+#  Tech Stack
 
 ## Frontend
 
@@ -199,7 +199,7 @@ campusway-buzz
 
 ---
 
-# 🚀 Getting Started
+#  Getting Started
 
 ## Prerequisites
 
@@ -282,7 +282,7 @@ npm run build
 
 ---
 
-# 📡 API Endpoints
+#  API Endpoints
 
 | Endpoint | Description |
 |----------|-------------|
@@ -295,7 +295,7 @@ npm run build
 
 ---
 
-# 🎨 UI Highlights
+#  UI Highlights
 
 - Dark, map-first layout
 - Real-time marker updates
@@ -305,7 +305,7 @@ npm run build
 
 ---
 
-# ⚡ Performance Optimizations
+#  Performance Optimizations
 
 - Socket.IO for low-latency updates over polling
 - Bounded location history queries
@@ -314,7 +314,7 @@ npm run build
 
 ---
 
-# 🧭 Roadmap
+#  Roadmap
 
 - [ ] Finish CampusWayDriver mobile app (Expo Router)
 - [ ] Remove legacy Firebase compatibility code
@@ -323,13 +323,13 @@ npm run build
 
 ---
 
-# 📄 License
+#  License
 
 This project is intended for educational and personal use.
 
 ---
 
-# 🙏 Acknowledgements
+#  Acknowledgements
 
 - OpenStreetMap / Leaflet
 - Socket.IO
