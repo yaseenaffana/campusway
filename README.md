@@ -53,7 +53,7 @@ Admins can:
 
 ---
 
-# ✨ Features
+#  Features
 
 ##  Live Fleet Tracking
 
