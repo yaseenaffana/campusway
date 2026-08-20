@@ -1,8 +1,16 @@
 import { io, Socket } from 'socket.io-client';
 import { fetchWithApiFallback, getSocketUrlCandidates } from './api';
-import { FLEET_CATALOG, findFleetCatalogItem, normalizeBusNo } from '../data/fleetCatalog';
+import { findFleetCatalogItem, normalizeBusNo } from '../data/fleetCatalog';
 
 let socket: Socket;
+let busesCache: any[] = [];
+let busesCacheAt = 0;
+let busesRequest: Promise<any[]> | null = null;
+
+const BUSES_CACHE_MS = 5000;
+const FLEET_REFRESH_DEBOUNCE_MS = 800;
+const FLEET_POLL_MS = 30000;
+const BUS_LOCATION_POLL_MS = 30000;
 
 const parseJson = async (response: Response) => {
   const text = await response.text();
@@ -21,54 +29,23 @@ const parseJson = async (response: Response) => {
 const cleanRouteLabel = (route: unknown, registration: unknown, fallbackRoute?: string) => {
   const routeText = String(route ?? '').trim();
   const registrationText = String(registration ?? '').trim().toUpperCase();
+  const normalizeKnownRouteTypos = (value: string) => value.replace(/\bSeniai\b/gi, 'Senjai');
 
   if (!routeText) {
-    return fallbackRoute || '';
+    return normalizeKnownRouteTypos(fallbackRoute || '');
   }
 
   const upperRouteText = routeText.toUpperCase();
   if (registrationText && upperRouteText === registrationText) {
-    return fallbackRoute || '';
+    return normalizeKnownRouteTypos(fallbackRoute || '');
   }
 
   if (registrationText && upperRouteText.startsWith(`${registrationText} - `)) {
-    return routeText.slice(registrationText.length + 3).trim() || fallbackRoute || '';
+    return normalizeKnownRouteTypos(routeText.slice(registrationText.length + 3).trim() || fallbackRoute || '');
   }
 
-  return routeText;
+  return normalizeKnownRouteTypos(routeText);
 };
-
-const mapCatalogBus = (item: (typeof FLEET_CATALOG)[number]) => ({
-  id: `bus_${item.busNo}`,
-  busNumber: item.busNo,
-  BusNo: item.registration,
-  registrationNumber: item.registration,
-  Registration: item.registration,
-  route: item.route,
-  Route: item.route,
-  location: undefined,
-  status: 'offline' as const,
-  updatedAt: Date.now(),
-  IsActive: !item.isSpare,
-  IsOnline: false,
-  driverName: `bus${item.busNo}`,
-  distance: null,
-  distanceText: null,
-  distanceKm: null,
-  etaMinutes: null,
-  trackingMode: undefined,
-  BusName: '',
-  Username: `bus${item.busNo}`,
-  CurrentLat: undefined,
-  CurrentLng: undefined,
-  Speed: undefined,
-  LastUpdated: undefined,
-  DestinationName: item.route,
-  DestinationLat: undefined,
-  DestinationLng: undefined,
-  SchoolLat: undefined,
-  SchoolLng: undefined
-});
 
 export const getSocket = () => {
   if (!socket) {
@@ -103,22 +80,35 @@ export const getSocket = () => {
 };
 
 export const buseService = {
-  async getBuses() {
+  async getBuses(options: { force?: boolean } = {}) {
+    const { force = false } = options;
+
+    if (!force && busesCache.length > 0 && Date.now() - busesCacheAt < BUSES_CACHE_MS) {
+      return busesCache;
+    }
+
+    if (!force && busesRequest) {
+      return busesRequest;
+    }
+
+    const request = (async () => {
     try {
-      const response = await fetchWithApiFallback('/api/buses/live');
+      const response = await fetchWithApiFallback('/api/buses');
       if (!response.ok) {
         console.warn(`Failed to fetch buses: ${response.statusText}`);
-        return FLEET_CATALOG.map(mapCatalogBus);
+        return busesCache;
       }
       const data = await parseJson(response);
       const buses = Array.isArray(data) ? data : (data.buses || []);
 
       if (!buses.length) {
-        return FLEET_CATALOG.map(mapCatalogBus);
+        busesCache = [];
+        busesCacheAt = Date.now();
+        return [];
       }
       
       // Map backend response to frontend Bus interface
-      return buses.map((bus: any) => {
+      const mappedBuses = buses.map((bus: any) => {
         const constRegistration = bus.registrationNumber || bus.Registration || bus.BusNo || '';
         const constBusNo = normalizeBusNo(bus.BusNo || bus.busNumber || bus.Username || bus.registrationNumber);
         const constCatalogItem = findFleetCatalogItem({
@@ -173,9 +163,23 @@ export const buseService = {
         SchoolLng: bus.SchoolLng
         };
       });
+      busesCache = mappedBuses;
+      busesCacheAt = Date.now();
+      return mappedBuses;
     } catch (error) {
       console.warn('Error in getBuses:', error);
-      return FLEET_CATALOG.map(mapCatalogBus);
+      return busesCache;
+    }
+    })();
+
+    busesRequest = request;
+
+    try {
+      return await request;
+    } finally {
+      if (busesRequest === request) {
+        busesRequest = null;
+      }
     }
   },
 
@@ -215,11 +219,13 @@ export const buseService = {
     try {
       const response = await fetchWithApiFallback(`/api/location/live/${username}`);
       if (!response.ok) {
+        if (response.status === 404) {
+          return null;
+        }
         return null;
       }
       return await parseJson(response);
-    } catch (error) {
-      console.warn('Error in getLiveLocation:', error);
+    } catch (_error) {
       return null;
     }
   },
@@ -250,24 +256,39 @@ export const buseService = {
 
   subscribeToFleetUpdates(callback) {
     const s = getSocket();
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 
-    const onFleetUpdate = async () => {
-      const buses = await this.getBuses();
+    const refreshFleet = async (force = false) => {
+      const buses = await this.getBuses({ force });
       callback(buses);
     };
+
+    const onFleetUpdate = async () => {
+      if (refreshTimer) {
+        clearTimeout(refreshTimer);
+      }
+
+      refreshTimer = setTimeout(() => {
+        refreshTimer = null;
+        void refreshFleet(true);
+      }, FLEET_REFRESH_DEBOUNCE_MS);
+    };
+
     s.on('fleetUpdate', onFleetUpdate);
 
     // Initial fetch as fallback
     const interval = setInterval(async () => {
-      const buses = await this.getBuses();
-      callback(buses);
-    }, 15000);
+      await refreshFleet(true);
+    }, FLEET_POLL_MS);
 
     // Initial fetch
-    this.getBuses().then(callback);
+    void refreshFleet(true);
 
     return () => {
       clearInterval(interval);
+      if (refreshTimer) {
+        clearTimeout(refreshTimer);
+      }
       s.off('fleetUpdate', onFleetUpdate);
     };
   },
@@ -333,7 +354,7 @@ export const buseService = {
     }
   },
 
-  async updateDriverPassword(busNo, newPassword) {
+  async updateDriverPassword(_busNo, newPassword) {
     const token = localStorage.getItem('driver_token') || localStorage.getItem('authToken');
     if (!token) {
       throw new Error('Missing authentication token');
@@ -345,7 +366,7 @@ export const buseService = {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`
       },
-      body: JSON.stringify({ busNo, newPassword })
+      body: JSON.stringify({ newPassword })
     });
 
     const data = await parseJson(response);
@@ -371,7 +392,7 @@ export const buseService = {
     const interval = setInterval(async () => {
       const location = await this.getLiveLocation(busNumber);
       if (location) callback(location);
-    }, 15000);
+    }, BUS_LOCATION_POLL_MS);
 
     // Initial fetch
     this.getLiveLocation(busNumber).then(location => {

@@ -378,48 +378,99 @@
 
 /* Popup Content */
 .popup-content {
-  padding: 8px;
+  padding: 16px;
+  background: white;
+  border-radius: 8px;
+  min-width: 280px;
 }
 
 .popup-content p {
-  margin: 4px 0;
+  margin: 8px 0;
   font-size: 14px;
+  line-height: 1.5;
 }
 
 .popup-content .bus-name {
   font-weight: 700;
   color: #1f2937;
+  font-size: 16px;
+  margin-bottom: 4px;
 }
 
 .popup-content .route-name {
   color: #6b7280;
-  font-size: 12px;
+  font-size: 13px;
+  margin-bottom: 8px;
 }
 
 .popup-content .status-badge {
   font-weight: 600;
   text-transform: uppercase;
   font-size: 11px;
+  display: inline-block;
+  padding: 4px 8px;
+  border-radius: 4px;
+  margin-bottom: 8px;
 }
 
 .popup-content .speed {
   color: #7C3AED;
   font-weight: 600;
+  font-size: 15px;
 }
 
 .popup-content .stop-name {
   font-weight: 700;
   color: #1f2937;
+  font-size: 15px;
 }
 
 .popup-content .distance {
   color: #6b7280;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .popup-content .eta {
   color: #7C3AED;
   font-weight: 600;
+}
+
+/* Leaflet Popup Styling */
+.leaflet-popup-content-wrapper {
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  border: none;
+  padding: 0;
+}
+
+.leaflet-popup-content {
+  margin: 0;
+  border-radius: 8px;
+}
+
+.leaflet-popup-tip {
+  background: white;
+  border: none;
+}
+
+.leaflet-popup-close-button {
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  font-size: 20px;
+  line-height: 28px;
+  color: #9ca3af;
+  background-color: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  transition: color 0.2s ease;
+}
+
+.leaflet-popup-close-button:hover {
+  color: #374151;
 }
 
 /* Responsive Design */

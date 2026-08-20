@@ -22,7 +22,6 @@ interface MapComponentProps {
 
 const DEFAULT_ZOOM = 15;
 const DEFAULT_CENTER: [number, number] = [10.105871781656774, 78.64251386094996];
-const HISTORY_REFRESH_MS = 8000;
 
 const busIcon = L.icon({
   iconUrl: busMarkerImage,
@@ -61,6 +60,35 @@ const haversineKm = (from: [number, number], to: [number, number]) => {
   return 2 * earthRadiusKm * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 };
 
+const hasUsableCoordinates = (lat: number, lng: number) =>
+  Number.isFinite(lat) &&
+  Number.isFinite(lng) &&
+  (Math.abs(lat) > 0.000001 || Math.abs(lng) > 0.000001);
+
+const ROUTE_REFRESH_MS = 15000;
+const ROUTE_REFRESH_DISTANCE_KM = 0.15;
+
+const isPayloadLive = (payload: any, selectedBus?: Bus) => {
+  if (typeof payload?.online === 'boolean') return payload.online;
+  if (typeof payload?.isOnline === 'boolean') return payload.isOnline;
+  if (typeof payload?.IsOnline === 'boolean') return payload.IsOnline;
+  if (payload?.status) return String(payload.status).toLowerCase() === 'online';
+  if (payload?.bus?.status) return String(payload.bus.status).toLowerCase() === 'online';
+  if (selectedBus?.status) return String(selectedBus.status).toLowerCase() === 'online';
+  if (typeof selectedBus?.IsOnline === 'boolean') return selectedBus.IsOnline;
+  return false;
+};
+
+const safeStopMap = (map: L.Map | null) => {
+  if (!map) return;
+
+  try {
+    map.stop();
+  } catch {
+    // Ignore animation stop errors during teardown.
+  }
+};
+
 const MapComponent: React.FC<MapComponentProps> = ({
   busId,
   busNumber,
@@ -76,11 +104,72 @@ const MapComponent: React.FC<MapComponentProps> = ({
   const busMarkerRef = useRef<L.Marker | null>(null);
   const destinationMarkerRef = useRef<L.Marker | null>(null);
   const schoolMarkerRef = useRef<L.Marker | null>(null);
-  const trailLineRef = useRef<L.Polyline | null>(null);
+  const routeLineRef = useRef<L.Polyline | null>(null);
+  const busAnimationFrameRef = useRef<number | null>(null);
+  const lastRouteRequestRef = useRef<{
+    busLat: number;
+    busLng: number;
+    destLat: number;
+    destLng: number;
+    at: number;
+  } | null>(null);
   const mapInitializedRef = useRef(false);
   const markersBoundsInitializedRef = useRef(false);
-  const lastHistoryFetchAtRef = useRef(0);
+  const isMountedRef = useRef(true);
   const [map, setMap] = useState<L.Map | null>(null);
+
+  const animateBusMarker = useCallback((marker: L.Marker, nextLat: number, nextLng: number) => {
+    const nextLatLng = L.latLng(nextLat, nextLng);
+    const currentLatLng = marker.getLatLng();
+
+    if (
+      !Number.isFinite(currentLatLng.lat) ||
+      !Number.isFinite(currentLatLng.lng) ||
+      (Math.abs(currentLatLng.lat - nextLat) < 0.000001 && Math.abs(currentLatLng.lng - nextLng) < 0.000001)
+    ) {
+      marker.setLatLng(nextLatLng);
+      return;
+    }
+
+    if (busAnimationFrameRef.current !== null) {
+      window.cancelAnimationFrame(busAnimationFrameRef.current);
+      busAnimationFrameRef.current = null;
+    }
+
+    const distanceKm = haversineKm([currentLatLng.lat, currentLatLng.lng], [nextLat, nextLng]);
+    const duration =
+      distanceKm < 0.05 ? 700 :
+      distanceKm < 0.2 ? 1100 :
+      distanceKm < 0.75 ? 1500 :
+      1900;
+
+    const startTime = performance.now();
+    const fromLat = currentLatLng.lat;
+    const fromLng = currentLatLng.lng;
+
+    const step = (now: number) => {
+      if (!isMountedRef.current || !busMarkerRef.current) {
+        busAnimationFrameRef.current = null;
+        return;
+      }
+
+      const progress = Math.min((now - startTime) / duration, 1);
+      const ease = 1 - Math.pow(1 - progress, 3);
+      const lat = fromLat + (nextLat - fromLat) * ease;
+      const lng = fromLng + (nextLng - fromLng) * ease;
+
+      marker.setLatLng([lat, lng]);
+
+      if (progress < 1) {
+        busAnimationFrameRef.current = window.requestAnimationFrame(step);
+      } else {
+        marker.setLatLng(nextLatLng);
+        busAnimationFrameRef.current = null;
+      }
+    };
+
+    busAnimationFrameRef.current = window.requestAnimationFrame(step);
+  }, []);
 
   const initMap = useCallback(() => {
     if (mapRef.current || !containerRef.current) return;
@@ -103,11 +192,26 @@ const MapComponent: React.FC<MapComponentProps> = ({
   }, []);
 
   useEffect(() => {
+    isMountedRef.current = true;
     const timer = window.setTimeout(initMap, 250);
 
     return () => {
+      isMountedRef.current = false;
       window.clearTimeout(timer);
       if (mapRef.current) {
+        safeStopMap(mapRef.current);
+        if (busAnimationFrameRef.current !== null) {
+          window.cancelAnimationFrame(busAnimationFrameRef.current);
+          busAnimationFrameRef.current = null;
+        }
+        busMarkerRef.current?.remove();
+        destinationMarkerRef.current?.remove();
+        schoolMarkerRef.current?.remove();
+        routeLineRef.current?.remove();
+        busMarkerRef.current = null;
+        destinationMarkerRef.current = null;
+        schoolMarkerRef.current = null;
+        routeLineRef.current = null;
         mapRef.current.remove();
         mapRef.current = null;
       }
@@ -117,78 +221,91 @@ const MapComponent: React.FC<MapComponentProps> = ({
   useEffect(() => {
     if (!map || !busNumber) return;
 
-    const updateHistoryTrail = async () => {
-      if (Date.now() - lastHistoryFetchAtRef.current < HISTORY_REFRESH_MS) {
-        return;
+    const fetchAndDrawRoute = async (busLat: number, busLng: number, destLat: number, destLng: number, destName: string) => {
+      const routeProviders = [
+        `https://router.project-osrm.org/route/v1/driving/${busLng},${busLat};${destLng},${destLat}?overview=full&geometries=geojson&steps=true`,
+        `https://routing.openstreetmap.de/routed-car/route/v1/driving/${busLng},${busLat};${destLng},${destLat}?overview=full&geometries=geojson&steps=true`
+      ];
+
+      for (const routeUrl of routeProviders) {
+        try {
+          const response = await fetch(routeUrl);
+          if (!response.ok) {
+            continue;
+          }
+
+          const data = await response.json();
+
+          if (!isMountedRef.current || !mapRef.current) {
+            return;
+          }
+
+          if (data.routes && data.routes[0]) {
+            const coords = data.routes[0].geometry.coordinates.map((c: [number, number]) => [c[1], c[0]]);
+
+            if (!routeLineRef.current) {
+              routeLineRef.current = L.polyline(coords, {
+                color: '#2563eb',
+                weight: 6,
+                opacity: 0.9,
+                lineCap: 'round',
+                lineJoin: 'round'
+              }).addTo(map);
+            } else {
+              routeLineRef.current.setLatLngs(coords);
+            }
+
+            const routeDistanceKm = Number((data.routes[0].distance / 1000).toFixed(2));
+            const routeDurationMinutes = Math.max(1, Math.round(data.routes[0].duration / 60));
+
+            onRouteUpdate?.({
+              distanceKm: routeDistanceKm,
+              durationMinutes: routeDurationMinutes,
+              destinationName: destName
+            });
+            return;
+          }
+        } catch (error) {
+          console.error('[ROUTE] Failed to fetch route:', error);
+        }
       }
 
-      lastHistoryFetchAtRef.current = Date.now();
-      const history = await buseService.getHistory(selectedBus?.Username || busNumber);
-      if (!Array.isArray(history) || history.length === 0) {
-        return;
-      }
+      const fallbackDistanceKm = Number(haversineKm([busLat, busLng], [destLat, destLng]).toFixed(2));
+      onRouteUpdate?.({
+        distanceKm: fallbackDistanceKm,
+        durationMinutes: null,
+        destinationName: destName
+      });
 
-      const points = history
-        .map((item: any) => [Number(item.lat), Number(item.lng)] as [number, number])
-        .filter(([lat, lng]) => Number.isFinite(lat) && Number.isFinite(lng));
-
-      if (points.length < 2) {
-        return;
-      }
-
-      if (!trailLineRef.current) {
-        trailLineRef.current = L.polyline(points, {
-          color: '#2563eb',
-          weight: 5,
-          opacity: 0.9,
-          lineCap: 'round',
-          lineJoin: 'round'
-        }).addTo(map);
-      } else {
-        trailLineRef.current.setLatLngs(points);
+      if (routeLineRef.current) {
+        routeLineRef.current.removeFrom(map);
+        routeLineRef.current = null;
       }
     };
 
     const applyLocation = (payload: any) => {
-      const busLat = Number(payload?.lat ?? payload?.latitude);
-      const busLng = Number(payload?.lng ?? payload?.longitude);
-      const destinationLat = Number(payload?.destinationLat ?? selectedBus?.DestinationLat);
-      const destinationLng = Number(payload?.destinationLng ?? selectedBus?.DestinationLng);
-      const destinationName = payload?.destination || selectedBus?.DestinationName || selectedBus?.route || 'Destination';
+      const sourceBus = payload?.bus ?? payload;
+      const liveBus = isPayloadLive(payload, selectedBus);
+      const busLat = Number(sourceBus?.lat ?? sourceBus?.latitude ?? sourceBus?.location?.lat ?? sourceBus?.CurrentLat);
+      const busLng = Number(sourceBus?.lng ?? sourceBus?.longitude ?? sourceBus?.location?.lng ?? sourceBus?.CurrentLng);
+      const destinationLat = Number(sourceBus?.destinationLat ?? selectedBus?.DestinationLat);
+      const destinationLng = Number(sourceBus?.destinationLng ?? selectedBus?.DestinationLng);
+      const destinationName = sourceBus?.destination || selectedBus?.DestinationName || selectedBus?.route || 'Destination';
 
-      if (!Number.isFinite(busLat) || !Number.isFinite(busLng)) return;
+      const schoolLat = Number(sourceBus?.schoolLat ?? selectedBus?.SchoolLat);
+      const schoolLng = Number(sourceBus?.schoolLng ?? selectedBus?.SchoolLng);
+      const hasLiveBusLocation = hasUsableCoordinates(busLat, busLng);
+      const hasDestinationLocation = hasUsableCoordinates(destinationLat, destinationLng);
+      const hasSchoolLocation = hasUsableCoordinates(schoolLat, schoolLng);
 
-      if (!busMarkerRef.current) {
-        busMarkerRef.current = L.marker([busLat, busLng], {
-          icon: busIcon,
-          zIndexOffset: 1000
-        })
-          .bindPopup(`<div style="font-weight:900;text-align:center;color:#1f2937;">Bus ${busNumber}</div>`, {
-            closeButton: false,
-            offset: [0, -15]
-          })
-          .openPopup()
-          .addTo(map);
-      } else {
-        busMarkerRef.current.setLatLng([busLat, busLng]);
-        busMarkerRef.current.setIcon(busIcon);
-      }
-
-      if (!mapInitializedRef.current) {
-        map.setView([busLat, busLng], DEFAULT_ZOOM);
-        mapInitializedRef.current = true;
-      }
-
-      const schoolLat = Number(payload?.schoolLat ?? selectedBus?.SchoolLat);
-      const schoolLng = Number(payload?.schoolLng ?? selectedBus?.SchoolLng);
-      if (Number.isFinite(schoolLat) && Number.isFinite(schoolLng)) {
+      if (hasSchoolLocation) {
         if (!schoolMarkerRef.current) {
           schoolMarkerRef.current = L.marker([schoolLat, schoolLng], {
             icon: schoolIcon,
             zIndexOffset: 400
           })
             .bindTooltip('School', {
-              permanent: false,
+              permanent: true,
               direction: 'top',
               offset: [0, -8]
             })
@@ -198,14 +315,58 @@ const MapComponent: React.FC<MapComponentProps> = ({
         }
       }
 
-      if (Number.isFinite(destinationLat) && Number.isFinite(destinationLng)) {
+      if (hasLiveBusLocation) {
+        if (!busMarkerRef.current) {
+          busMarkerRef.current = L.marker([busLat, busLng], {
+            icon: busIcon,
+            zIndexOffset: 1000
+          })
+            .bindPopup(`<div style="font-weight:900;text-align:center;color:#1f2937;">Bus ${busNumber}</div>`, {
+              closeButton: false,
+              offset: [0, -15]
+            })
+            .openPopup()
+            .addTo(map);
+        } else {
+          animateBusMarker(busMarkerRef.current, busLat, busLng);
+          busMarkerRef.current.setIcon(busIcon);
+        }
+        busMarkerRef.current.setOpacity(liveBus ? 1 : 0.7);
+      } else if (busMarkerRef.current) {
+        safeStopMap(map);
+        busMarkerRef.current.removeFrom(map);
+        busMarkerRef.current = null;
+        if (busAnimationFrameRef.current !== null) {
+          window.cancelAnimationFrame(busAnimationFrameRef.current);
+          busAnimationFrameRef.current = null;
+        }
+      }
+
+      if (!liveBus && routeLineRef.current) {
+        safeStopMap(map);
+        routeLineRef.current.removeFrom(map);
+        routeLineRef.current = null;
+      }
+
+      if (!mapInitializedRef.current) {
+        if (hasLiveBusLocation) {
+          safeStopMap(map);
+          map.setView([busLat, busLng], DEFAULT_ZOOM, { animate: false });
+        } else if (hasSchoolLocation) {
+          safeStopMap(map);
+          map.setView([schoolLat, schoolLng], DEFAULT_ZOOM, { animate: false });
+        }
+        mapInitializedRef.current = true;
+      }
+
+      if (hasDestinationLocation) {
         if (!destinationMarkerRef.current) {
           destinationMarkerRef.current = L.marker([destinationLat, destinationLng], {
             icon: destinationIcon,
             zIndexOffset: 500
           })
             .bindTooltip(destinationName, {
-              permanent: false,
+              permanent: true,
               direction: 'top',
               offset: [0, -8]
             })
@@ -214,39 +375,50 @@ const MapComponent: React.FC<MapComponentProps> = ({
           destinationMarkerRef.current.setLatLng([destinationLat, destinationLng]);
           destinationMarkerRef.current.setTooltipContent(destinationName);
         }
+
+        if (liveBus && hasLiveBusLocation) {
+          const now = Date.now();
+          const lastRouteRequest = lastRouteRequestRef.current;
+          const movedEnough = !lastRouteRequest || haversineKm(
+            [lastRouteRequest.busLat, lastRouteRequest.busLng],
+            [busLat, busLng]
+          ) >= ROUTE_REFRESH_DISTANCE_KM;
+          const destinationChanged = !lastRouteRequest ||
+            Math.abs(lastRouteRequest.destLat - destinationLat) > 0.000001 ||
+            Math.abs(lastRouteRequest.destLng - destinationLng) > 0.000001;
+          const refreshExpired = !lastRouteRequest || (now - lastRouteRequest.at) >= ROUTE_REFRESH_MS;
+
+          if (movedEnough || destinationChanged || refreshExpired) {
+            lastRouteRequestRef.current = {
+              busLat,
+              busLng,
+              destLat: destinationLat,
+              destLng: destinationLng,
+              at: now
+            };
+            void fetchAndDrawRoute(busLat, busLng, destinationLat, destinationLng, destinationName);
+          }
+        }
       }
 
-      void updateHistoryTrail();
-
       if (!markersBoundsInitializedRef.current) {
-        const boundsPoints: [number, number][] = [[busLat, busLng]];
-        if (Number.isFinite(destinationLat) && Number.isFinite(destinationLng)) {
+        const boundsPoints: [number, number][] = [];
+        if (hasLiveBusLocation) {
+          boundsPoints.push([busLat, busLng]);
+        }
+        if (hasDestinationLocation) {
           boundsPoints.push([destinationLat, destinationLng]);
         }
-        if (Number.isFinite(schoolLat) && Number.isFinite(schoolLng)) {
+        if (hasSchoolLocation) {
           boundsPoints.push([schoolLat, schoolLng]);
         }
 
         if (boundsPoints.length > 1) {
-          map.fitBounds(L.latLngBounds(boundsPoints).pad(0.22), { animate: true });
+          safeStopMap(map);
+          map.fitBounds(L.latLngBounds(boundsPoints).pad(0.22), { animate: false });
           markersBoundsInitializedRef.current = true;
         }
       }
-
-      const fallbackDistanceKm =
-        Number.isFinite(destinationLat) && Number.isFinite(destinationLng)
-          ? Number(haversineKm([busLat, busLng], [destinationLat, destinationLng]).toFixed(2))
-          : null;
-      const fallbackEtaMinutes =
-        fallbackDistanceKm != null && Number(payload?.speed) > 0
-          ? Math.max(1, Math.round((fallbackDistanceKm / Number(payload.speed)) * 60))
-          : null;
-
-      onRouteUpdate?.({
-        distanceKm: typeof payload?.distanceKm === 'number' ? payload.distanceKm : fallbackDistanceKm,
-        durationMinutes: typeof payload?.etaMinutes === 'number' ? payload.etaMinutes : fallbackEtaMinutes,
-        destinationName
-      });
     };
 
     if (selectedBus?.location) {
@@ -257,27 +429,53 @@ const MapComponent: React.FC<MapComponentProps> = ({
         etaMinutes: selectedBus.etaMinutes,
         destination: selectedBus.DestinationName,
         destinationLat: selectedBus.DestinationLat,
-        destinationLng: selectedBus.DestinationLng
+        destinationLng: selectedBus.DestinationLng,
+        schoolLat: selectedBus.SchoolLat,
+        schoolLng: selectedBus.SchoolLng,
+        status: selectedBus.status,
+        isOnline: selectedBus.IsOnline
+      });
+    } else if (selectedBus) {
+      applyLocation({
+        destination: selectedBus.DestinationName,
+        destinationLat: selectedBus.DestinationLat,
+        destinationLng: selectedBus.DestinationLng,
+        schoolLat: selectedBus.SchoolLat,
+        schoolLng: selectedBus.SchoolLng,
+        status: selectedBus.status,
+        isOnline: selectedBus.IsOnline
       });
     }
 
     const unsubscribe = buseService.subscribeToBus(busNumber, applyLocation);
     return () => unsubscribe();
-  }, [busNumber, map, onRouteUpdate, selectedBus]);
+  }, [busNumber, focusRequestId, map, onRouteUpdate, selectedBus]);
 
   useEffect(() => {
     if (!map || focusRequestId == null) return;
 
     const timer = window.setTimeout(() => {
-      const routeBounds = trailLineRef.current?.getBounds();
+      if (!isMountedRef.current || !containerRef.current?.isConnected || !mapRef.current) {
+        return;
+      }
+
+      const routeBounds = routeLineRef.current?.getBounds();
 
       if (routeBounds?.isValid()) {
-        map.fitBounds(routeBounds.pad(0.22), { animate: true });
+        safeStopMap(map);
+        map.fitBounds(routeBounds.pad(0.22), { animate: false });
         return;
       }
 
       if (busMarkerRef.current) {
-        map.flyTo(busMarkerRef.current.getLatLng(), DEFAULT_ZOOM + 1, { animate: true, duration: 0.8 });
+        safeStopMap(map);
+        map.setView(busMarkerRef.current.getLatLng(), DEFAULT_ZOOM + 1, { animate: false });
+        return;
+      }
+
+      if (schoolMarkerRef.current) {
+        safeStopMap(map);
+        map.setView(schoolMarkerRef.current.getLatLng(), DEFAULT_ZOOM, { animate: false });
       }
     }, 80);
 
@@ -286,7 +484,16 @@ const MapComponent: React.FC<MapComponentProps> = ({
 
   useEffect(() => {
     if (!map) return;
-    const timer = window.setTimeout(() => map.invalidateSize(), 300);
+
+    const timer = window.setTimeout(() => {
+      if (!isMountedRef.current || !containerRef.current?.isConnected || !mapRef.current) {
+        return;
+      }
+
+      safeStopMap(map);
+      map.invalidateSize({ animate: false });
+    }, 300);
+
     return () => window.clearTimeout(timer);
   }, [map, viewMode]);
 

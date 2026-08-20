@@ -189,12 +189,12 @@ const DriverTrackingDashboard: React.FC = () => {
       }
     );
 
-    // Send location every 1 second
+    // Send location every 5 seconds
     locationIntervalRef.current = setInterval(() => {
       if (state.latitude && state.longitude && state.busId) {
         sendLocationUpdate();
       }
-    }, 1000);
+    }, 5000);
 
     setState(prev => ({ ...prev, isTracking: true }));
   };

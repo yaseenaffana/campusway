@@ -19,6 +19,9 @@ const JWT_SECRET = process.env.JWT_SECRET || 'mzsjs-buzz-secret-key-2026';
 const PORT = parseInt(process.env.PORT || '4000', 10);
 const HOST = process.env.HOST || '0.0.0.0';
 const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
+const ADMIN_USERNAME = String(process.env.ADMIN_USERNAME || 'admin').trim();
+const ADMIN_PASSWORD = String(process.env.ADMIN_PASSWORD || 'admin123').trim();
+const ADMIN_EMP_ID = String(process.env.ADMIN_EMP_ID || 'ADMIN001').trim();
 
 const app = express();
 const server = http.createServer(app);
@@ -85,6 +88,13 @@ const authenticateToken = (req, res, next) => {
 const isDriver = (req, res, next) => {
   if (req.user.role !== 'DRIVER') {
     return res.status(403).json({ success: false, error: 'Driver access only' });
+  }
+  next();
+};
+
+const isAdmin = (req, res, next) => {
+  if (String(req.user?.role || '').toLowerCase() !== 'admin') {
+    return res.status(403).json({ success: false, error: 'Admin access only' });
   }
   next();
 };
@@ -171,22 +181,84 @@ cron.schedule('0 2 * * *', async () => {
 
 // ==================== API ENDPOINTS ====================
 
+app.post('/api/admin/login', async (req, res) => {
+  try {
+    const username = String(req.body?.username || '').trim();
+    const password = String(req.body?.password || '').trim();
+
+    if (!username || !password) {
+      return res.status(400).json({ success: false, error: 'Username and password are required' });
+    }
+
+    if (username !== ADMIN_USERNAME || password !== ADMIN_PASSWORD) {
+      return res.status(401).json({ success: false, error: 'Invalid admin credentials' });
+    }
+
+    const token = jwt.sign(
+      { username, empId: ADMIN_EMP_ID, role: 'admin' },
+      JWT_SECRET,
+      { expiresIn: '12h' }
+    );
+
+    return res.json({
+      success: true,
+      token,
+      admin: {
+        username,
+        empId: ADMIN_EMP_ID
+      }
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/admin/logout', authenticateToken, isAdmin, async (_req, res) => {
+  return res.json({ success: true });
+});
+
 /**
  * GET /api/buses
- * Get all buses (alias for /api/buses/live)
+ * Get all buses with online status based on active GPS sharing
  */
 app.get('/api/buses', async (req, res) => {
   try {
+    // Check for buses with recent LocationHistory entries (GPS sharing)
     const result = await db.executeQuery(`
       SELECT 
-        BusNo, BusName, Username, CurrentLat, CurrentLng, Speed, LastUpdated,
-        DestinationName, DestinationLat, DestinationLng, SchoolLat, SchoolLng
-      FROM dbo.Buses
+        b.Id,
+        b.BusNo, 
+        b.BusName, 
+        b.Username, 
+        b.CurrentLat, 
+        b.CurrentLng, 
+        b.Speed, 
+        b.LastUpdated,
+        b.DestinationName, 
+        b.DestinationLat, 
+        b.DestinationLng, 
+        b.SchoolLat, 
+        b.SchoolLng,
+        -- Check if bus has recent GPS entries (within last 60 seconds)
+        CASE WHEN EXISTS (
+          SELECT 1 FROM dbo.LocationHistory lh 
+          WHERE lh.BusNo = b.BusNo 
+          AND lh.RecordedAt > DATEADD(SECOND, -60, GETDATE())
+        ) THEN 1 ELSE 0 END AS HasRecentGPS,
+        -- Count recent GPS entries
+        (SELECT COUNT(*) FROM dbo.LocationHistory lh 
+         WHERE lh.BusNo = b.BusNo 
+         AND lh.RecordedAt > DATEADD(SECOND, -60, GETDATE())) AS GPSCount
+      FROM dbo.Buses b
+      ORDER BY 
+        HasRecentGPS DESC,  -- Online (has GPS) first
+        b.BusNo ASC  -- Then ordered by bus number (string sort)
     `);
 
     const buses = result.recordset.map(b => ({
       ...b,
-      isOnline: (new Date() - new Date(b.LastUpdated)) < 30000
+      isOnline: b.HasRecentGPS === 1,  // Online only if actively sharing GPS
+      status: b.HasRecentGPS === 1 ? 'online' : 'offline'
     }));
 
     res.json({ success: true, buses, count: buses.length });
@@ -198,23 +270,56 @@ app.get('/api/buses', async (req, res) => {
 
 /**
  * GET /api/buses/live
- * Return all bus locations
+ * Return online buses based on active GPS sharing (ordered)
  */
 app.get('/api/buses/live', async (req, res) => {
   try {
     const result = await db.executeQuery(`
       SELECT 
-        BusNo, BusName, Username, CurrentLat, CurrentLng, Speed, LastUpdated,
-        DestinationName, DestinationLat, DestinationLng, SchoolLat, SchoolLng
-      FROM dbo.Buses
+        b.Id,
+        b.BusNo, 
+        b.BusName, 
+        b.Username, 
+        b.CurrentLat, 
+        b.CurrentLng, 
+        b.Speed, 
+        b.LastUpdated,
+        b.DestinationName, 
+        b.DestinationLat, 
+        b.DestinationLng, 
+        b.SchoolLat, 
+        b.SchoolLng,
+        -- Check if bus has recent GPS entries (within last 60 seconds)
+        CASE WHEN EXISTS (
+          SELECT 1 FROM dbo.LocationHistory lh 
+          WHERE lh.BusNo = b.BusNo 
+          AND lh.RecordedAt > DATEADD(SECOND, -60, GETDATE())
+        ) THEN 1 ELSE 0 END AS HasRecentGPS,
+        -- Count recent GPS entries
+        (SELECT COUNT(*) FROM dbo.LocationHistory lh 
+         WHERE lh.BusNo = b.BusNo 
+         AND lh.RecordedAt > DATEADD(SECOND, -60, GETDATE())) AS GPSCount,
+        -- Get latest GPS timestamp
+        (SELECT TOP 1 RecordedAt FROM dbo.LocationHistory lh 
+         WHERE lh.BusNo = b.BusNo 
+         ORDER BY RecordedAt DESC) AS LastGPSTime
+      FROM dbo.Buses b
+      WHERE EXISTS (
+        SELECT 1 FROM dbo.LocationHistory lh 
+        WHERE lh.BusNo = b.BusNo 
+        AND lh.RecordedAt > DATEADD(SECOND, -60, GETDATE())
+      )
+      ORDER BY b.BusNo ASC
     `);
 
     const buses = result.recordset.map(b => ({
       ...b,
-      isOnline: (new Date() - new Date(b.LastUpdated)) < 30000 // Online if updated in last 30s
+      isOnline: true,  // Already filtered to only online buses
+      status: 'online',
+      lastGPSTime: b.LastGPSTime
     }));
 
-    res.json({ success: true, buses });
+    res.json({ success: true, buses, onlineCount: buses.length });
   } catch (err) {
     console.error('❌ SQL Error (GET live):', err.message);
     res.status(500).json({ success: false, error: 'Database error' });

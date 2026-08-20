@@ -5,6 +5,7 @@ import L from 'leaflet';
 import { googleMapsService } from '../services/googleMapsService';
 import collegeLogo from '../school_logo.jpg';
 import { normalizeBusNo } from '../data/fleetCatalog';
+import RouteCard from './RouteCard';
 
 interface StudentBusListProps {
     buses: Bus[];
@@ -28,9 +29,6 @@ export const StudentBusCard = React.memo(({
     // FIX 5, 12, 14: Use unified utility to reject [0,0] and check staleness
     const isLive = isBusActive(bus);
 
-    let borderClass = 'border-slate-100';
-    let scaleClass = 'active:scale-[0.97]';
-    let shadowClass = 'shadow-sm';
     const isSpare = !bus.IsActive || String(bus.route || '').toLowerCase() === 'spare';
     const busLabel = normalizeBusNo(bus.busNumber || bus.BusNo) || String(bus.busNumber || bus.BusNo);
     const registrationLike = String(
@@ -43,16 +41,6 @@ export const StudentBusCard = React.memo(({
         ? String(bus.DestinationName || '').trim()
         : rawRouteText;
     
-    // Driver mode styling overrides
-    if (isDriverView && isSelected) {
-        borderClass = 'border-indigo-600 bg-indigo-50/40 text-indigo-900';
-        scaleClass = 'scale-[1.02] active:scale-[1.02] z-10'; // Keep it scaled up
-    } else if (!isDriverView && isLive) {
-        borderClass = 'border-green-400 bg-green-50/10 shadow-[0_0_15px_rgba(34,197,94,0.15)] ring-1 ring-green-400/50';
-    } else if (isSpare) {
-        borderClass = 'border-slate-200 bg-slate-50/80';
-    }
-
     let etaText = '';
     if (!isDriverView && isLive && studentLocation && bus.location) {
         const distMeters = L.latLng(studentLocation.lat, studentLocation.lng).distanceTo(L.latLng(bus.location.lat, bus.location.lng));
@@ -67,46 +55,14 @@ export const StudentBusCard = React.memo(({
     }
 
     return (
-        <button
+        <RouteCard
+            route={routeText || 'Route not assigned'}
+            busLabel={`Bus ${busLabel}`}
+            status={isSpare ? 'spare' : isLive ? 'live' : 'ready'}
+            meta={etaText}
+            selected={Boolean(isDriverView && isSelected)}
             onClick={onClick}
-            className={`group relative flex flex-col p-4 bg-white rounded-[1.4rem] border-2 transition-all duration-300 text-left w-full overflow-hidden select-none tap-transparent min-h-[176px] ${borderClass} ${scaleClass} ${shadowClass}`}
-            style={{ WebkitTapHighlightColor: 'transparent', userSelect: 'none' }}
-        >
-            <div className="flex items-center justify-between gap-3">
-                <span className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Bus Route</span>
-                {isLive ? (
-                    <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-[9px] font-black uppercase tracking-[0.16em] text-emerald-700">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                        Live
-                    </span>
-                ) : isSpare ? (
-                    <span className="inline-flex items-center px-2 py-1 rounded-full bg-slate-100 border border-slate-200 text-[9px] font-black uppercase tracking-[0.16em] text-slate-500">
-                        Spare
-                    </span>
-                ) : (
-                    <span className="inline-flex items-center px-2 py-1 rounded-full bg-slate-100 border border-slate-200 text-[9px] font-black uppercase tracking-[0.16em] text-slate-500">
-                        Ready
-                    </span>
-                )}
-            </div>
-
-            <div className="mt-4 text-[22px] font-[900] text-slate-900 tracking-tight leading-tight break-words">
-                {routeText || 'Route not assigned'}
-            </div>
-            <p className="mt-3 text-[12px] font-black uppercase tracking-[0.14em] text-slate-400">
-                Bus {busLabel}
-            </p>
-
-            <div className="mt-auto pt-4">
-                {etaText ? (
-                    <p className="text-[11px] font-bold text-indigo-600">{etaText}</p>
-                ) : (
-                    <p className="text-[11px] font-semibold text-slate-400">
-                        Tap to open bus tracking
-                    </p>
-                )}
-            </div>
-        </button>
+        />
     );
 });
 

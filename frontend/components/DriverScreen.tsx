@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Coordinates } from '../types';
-import { apiClient, API_URL } from '../services/api';
+import { buseService } from '../services/busService';
 import { socketService } from '../services/socketService';
 
 interface DriverScreenProps {
@@ -19,43 +19,46 @@ const DriverScreen: React.FC<DriverScreenProps> = ({ busNo, registration, route,
   const [lastSent, setLastSent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [accuracy, setAccuracy] = useState<number | null>(null);
-  
+  const [disconnectMessage, setDisconnectMessage] = useState<string | null>(null);
+
   const latestCoords = useRef<Coordinates | null>(null);
   const latestSpeed = useRef(0);
   const watchId = useRef<number | null>(null);
   const intervalId = useRef<NodeJS.Timeout | null>(null);
 
-  // Set auth token if provided
   useEffect(() => {
     if (token) {
-      apiClient.setToken(token);
+      localStorage.setItem('authToken', token);
+      localStorage.setItem('driver_token', token);
     }
   }, [token]);
 
   const stopSharing = async () => {
-    // 1. Clear Watch
     if (watchId.current !== null) {
       navigator.geolocation.clearWatch(watchId.current);
       watchId.current = null;
     }
-    
-    // 2. Clear Interval
+
     if (intervalId.current !== null) {
       clearInterval(intervalId.current);
       intervalId.current = null;
     }
-    
-    // 3. Disconnect from Server
+
     try {
-      await apiClient.disconnectBus(busNo);
+      const activeToken = token || localStorage.getItem('driver_token') || localStorage.getItem('authToken') || '';
+      await buseService.disconnectDriver(activeToken);
+      setDisconnectMessage('Disconnected successfully. Sharing stopped.');
+      setSendCount(0);
+      setLastSent(null);
+      setTimeout(() => setDisconnectMessage(null), 3000);
     } catch (err) {
-      console.error("Disconnect failed:", err);
+      console.error('Disconnect failed:', err);
+      setDisconnectMessage('Disconnect failed, but sharing has stopped locally.');
+      setTimeout(() => setDisconnectMessage(null), 4000);
     }
-    
-    // 4. Leave Socket.IO room
+
     socketService.leaveBus(busNo);
-    
-    // 5. Reset State
+
     setIsSharing(false);
     setCoords(null);
     setSpeed(0);
@@ -66,7 +69,7 @@ const DriverScreen: React.FC<DriverScreenProps> = ({ busNo, registration, route,
 
   const startSharing = async () => {
     if (!navigator.geolocation) {
-      setError("Geolocation is not supported by your browser.");
+      setError('Geolocation is not supported by your browser.');
       return;
     }
 
@@ -74,58 +77,55 @@ const DriverScreen: React.FC<DriverScreenProps> = ({ busNo, registration, route,
       setError(null);
       setIsSharing(true);
 
-      // Connect to Socket.IO if not already connected
       if (!socketService.isConnected()) {
         await socketService.connect(token);
       }
-      
-      // Join the bus room for receiving specific updates
+
       socketService.joinBus(busNo);
 
-      // Watch Position with high accuracy
       watchId.current = navigator.geolocation.watchPosition(
         (pos) => {
-          const { latitude, longitude, speed: mps, accuracy } = pos.coords;
+          const { latitude, longitude, speed: mps, accuracy: gpsAccuracy } = pos.coords;
           const newCoords = { lat: latitude, lng: longitude };
-          const newSpeed = mps ? Math.round(mps * 3.6) : 0; // Convert m/s to km/h
-          
+          const newSpeed = mps ? Math.round(mps * 3.6) : 0;
+
           setCoords(newCoords);
           setSpeed(newSpeed);
-          setAccuracy(accuracy);
-          
+          setAccuracy(gpsAccuracy);
+
           latestCoords.current = newCoords;
           latestSpeed.current = newSpeed;
         },
         (err) => {
-          console.error("GPS Error:", err);
+          console.error('GPS Error:', err);
           setError(`GPS Error: ${err.message}`);
         },
-        { 
-          enableHighAccuracy: true, 
+        {
+          enableHighAccuracy: true,
           maximumAge: 0,
           timeout: 5000
         }
       );
 
-      // Auto-send every 1 second (low latency as required)
       intervalId.current = setInterval(async () => {
         if (latestCoords.current) {
           try {
-            await apiClient.updateBusLocation(
-              latestCoords.current.lat,
-              latestCoords.current.lng,
-              latestSpeed.current
-            );
-            setSendCount(prev => prev + 1);
+            await buseService.updateBusLocation(busNo, {
+              lat: latestCoords.current.lat,
+              lng: latestCoords.current.lng,
+              speed: latestSpeed.current,
+              timestamp: Date.now()
+            });
+            setSendCount((prev) => prev + 1);
             setLastSent(new Date().toLocaleTimeString());
           } catch (err) {
-            console.error("Location update failed:", err);
+            console.error('Location update failed:', err);
             setError(`Update failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
           }
         }
-      }, 1000); // 1 second interval
+      }, 1000);
     } catch (err) {
-      console.error("Failed to start sharing:", err);
+      console.error('Failed to start sharing:', err);
       setError(err instanceof Error ? err.message : 'Failed to start sharing');
       setIsSharing(false);
     }
@@ -139,7 +139,8 @@ const DriverScreen: React.FC<DriverScreenProps> = ({ busNo, registration, route,
 
   const handleLogout = async () => {
     await stopSharing();
-    apiClient.logout();
+    localStorage.removeItem('authToken');
+    localStorage.removeItem('driver_token');
     onLogout();
   };
 
@@ -154,7 +155,6 @@ const DriverScreen: React.FC<DriverScreenProps> = ({ busNo, registration, route,
       alignItems: 'center',
       fontFamily: "'Inter', sans-serif"
     }}>
-      {/* Header */}
       <div style={{ textAlign: 'center', marginBottom: '40px' }}>
         <h1 style={{ fontSize: '48px', margin: '0', fontWeight: '800', letterSpacing: '-2px', color: '#0f172a' }}>
           BUS {busNo}
@@ -176,7 +176,6 @@ const DriverScreen: React.FC<DriverScreenProps> = ({ busNo, registration, route,
         </p>
       </div>
 
-      {/* Error Alert */}
       {error && (
         <div style={{
           width: '100%',
@@ -192,17 +191,41 @@ const DriverScreen: React.FC<DriverScreenProps> = ({ busNo, registration, route,
           justifyContent: 'space-between',
           alignItems: 'center'
         }}>
-          <span>⚠️ {error}</span>
+          <span>{error}</span>
           <button
             onClick={() => setError(null)}
             style={{ background: 'none', border: 'none', color: '#991b1b', cursor: 'pointer', fontSize: '20px' }}
           >
-            ×
+            x
           </button>
         </div>
       )}
 
-      {/* Stats Cards */}
+      {disconnectMessage && (
+        <div style={{
+          width: '100%',
+          maxWidth: '400px',
+          padding: '12px 16px',
+          background: disconnectMessage.startsWith('Disconnected') ? '#d1fae5' : '#fee2e2',
+          border: `1px solid ${disconnectMessage.startsWith('Disconnected') ? '#a7f3d0' : '#fca5a5'}`,
+          borderRadius: '8px',
+          color: disconnectMessage.startsWith('Disconnected') ? '#065f46' : '#991b1b',
+          fontSize: '14px',
+          marginBottom: '24px',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center'
+        }}>
+          <span>{disconnectMessage}</span>
+          <button
+            onClick={() => setDisconnectMessage(null)}
+            style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', fontSize: '20px' }}
+          >
+            x
+          </button>
+        </div>
+      )}
+
       <div style={{
         display: 'grid',
         gridTemplateColumns: 'repeat(3, 1fr)',
@@ -216,7 +239,6 @@ const DriverScreen: React.FC<DriverScreenProps> = ({ busNo, registration, route,
         <StatCard label="Last" value={lastSent || '--:--'} unit="" />
       </div>
 
-      {/* Accuracy Info */}
       {accuracy && (
         <div style={{
           fontSize: '12px',
@@ -224,14 +246,13 @@ const DriverScreen: React.FC<DriverScreenProps> = ({ busNo, registration, route,
           marginBottom: '16px',
           textAlign: 'center'
         }}>
-          Accuracy: ±{accuracy.toFixed(1)}m
+          Accuracy: +/-{accuracy.toFixed(1)}m
         </div>
       )}
 
-      {/* Action Buttons */}
       <div style={{ position: 'relative', marginBottom: '40px' }}>
         {!isSharing ? (
-          <button 
+          <button
             onClick={startSharing}
             style={{
               ...buttonStyle,
@@ -244,7 +265,7 @@ const DriverScreen: React.FC<DriverScreenProps> = ({ busNo, registration, route,
         ) : (
           <>
             <div className="pulse-button-ring"></div>
-            <button 
+            <button
               onClick={stopSharing}
               style={{
                 ...buttonStyle,
@@ -260,12 +281,11 @@ const DriverScreen: React.FC<DriverScreenProps> = ({ busNo, registration, route,
         )}
       </div>
 
-      {/* Status Info */}
       {isSharing && (
-        <div style={{ textAlign: 'center', animation: 'fadeIn 0.5s ease' }}>
+        <div style={{ textAlign: 'center' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#10b981', fontWeight: '600' }}>
             <div className="dot-blink"></div>
-            Live — Students can see your location
+            Live - students can see your location
           </div>
           <div style={{ marginTop: '12px', fontSize: '13px', color: '#94a3b8' }}>
             Lat: {coords?.lat.toFixed(6)} | Lng: {coords?.lng.toFixed(6)}
@@ -273,8 +293,7 @@ const DriverScreen: React.FC<DriverScreenProps> = ({ busNo, registration, route,
         </div>
       )}
 
-      {/* Logout */}
-      <button 
+      <button
         onClick={handleLogout}
         style={{
           marginTop: 'auto',
@@ -284,17 +303,13 @@ const DriverScreen: React.FC<DriverScreenProps> = ({ busNo, registration, route,
           padding: '10px 24px',
           borderRadius: '12px',
           cursor: 'pointer',
-          transition: 'all 0.2s',
           fontWeight: '600'
         }}
-        onMouseOver={(e) => { e.currentTarget.style.color = '#0f172a'; e.currentTarget.style.borderColor = '#0f172a'; }}
-        onMouseOut={(e) => { e.currentTarget.style.color = '#64748b'; e.currentTarget.style.borderColor = '#e2e8f0'; }}
       >
         Logout
       </button>
 
       <style>{`
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
         .dot-blink { width: 8px; height: 8px; background: #10b981; border-radius: 50%; animation: blink 1s infinite; }
         @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
         .pulse-button-ring {
@@ -304,50 +319,7 @@ const DriverScreen: React.FC<DriverScreenProps> = ({ busNo, registration, route,
           border: 4px solid #ef4444;
           animation: pulse-ring 1.5s infinite;
         }
-        @keyframes pulse-ring { 
-          0% { transform: scale(1); opacity: 0.8; }
-          100% { transform: scale(1.3); opacity: 0; }
-        }
-      `}</style>
-    </div>
-  );>
-            Lat: {coords?.lat.toFixed(6)} | Lng: {coords?.lng.toFixed(6)}
-          </div>
-        </div>
-      )}
-
-      {/* Logout */}
-      <button 
-        onClick={handleLogout}
-        style={{
-          marginTop: 'auto',
-          background: 'transparent',
-          color: '#64748b',
-          border: '1px solid #e2e8f0',
-          padding: '10px 24px',
-          borderRadius: '12px',
-          cursor: 'pointer',
-          transition: 'all 0.2s',
-          fontWeight: '600'
-        }}
-        onMouseOver={(e) => { e.currentTarget.style.color = '#0f172a'; e.currentTarget.style.borderColor = '#0f172a'; }}
-        onMouseOut={(e) => { e.currentTarget.style.color = '#64748b'; e.currentTarget.style.borderColor = '#e2e8f0'; }}
-      >
-        Logout
-      </button>
-
-      <style>{`
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        .dot-blink { width: 8px; height: 8px; background: #10b981; border-radius: 50%; animation: blink 1s infinite; }
-        @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
-        .pulse-button-ring {
-          position: absolute;
-          top: 0; left: 0; right: 0; bottom: 0;
-          border-radius: 40px;
-          border: 4px solid #ef4444;
-          animation: pulse-ring 1.5s infinite;
-        }
-        @keyframes pulse-ring { 
+        @keyframes pulse-ring {
           0% { transform: scale(1); opacity: 0.8; }
           100% { transform: scale(1.3); opacity: 0; }
         }
@@ -379,7 +351,6 @@ const buttonStyle: React.CSSProperties = {
   color: 'white',
   border: 'none',
   cursor: 'pointer',
-  transition: 'transform 0.2s active',
   letterSpacing: '1px'
 };
 

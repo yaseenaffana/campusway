@@ -2,6 +2,9 @@ import { executeQuery } from '../db.js';
 
 const FIXED_SCHOOL_LAT = 10.105871781656774;
 const FIXED_SCHOOL_LNG = 78.64251386094996;
+const LIVE_WINDOW_SECONDS = 5;
+const TRACKING_TIME_ZONE = process.env.TRACKING_TIME_ZONE || 'Asia/Kolkata';
+
 const getFleetNo = (value = '') => {
   const match = String(value).match(/\d+/);
   return match ? match[0] : String(value || '');
@@ -19,7 +22,20 @@ const haversineKm = (lat1, lon1, lat2, lon2) => {
   return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 };
 
-const getTrackingMode = (date = new Date()) => (date.getHours() < 12 ? 'MORNING' : 'EVENING');
+const getTrackingHour = (date = new Date()) => {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      hour: 'numeric',
+      hour12: false,
+      timeZone: TRACKING_TIME_ZONE
+    });
+    return Number(formatter.format(date));
+  } catch {
+    return date.getHours();
+  }
+};
+
+const getTrackingMode = (date = new Date()) => (getTrackingHour(date) < 12 ? 'MORNING' : 'EVENING');
 
 const getSchoolCoordinates = (bus) => {
   const lat = Number(bus?.SchoolLat);
@@ -76,63 +92,120 @@ const buildDistanceInfo = (bus, date = new Date()) => {
   };
 };
 
-const onlineExpr = `CASE WHEN LastUpdated > DATEADD(SECOND, -10, GETDATE()) THEN 1 ELSE 0 END`;
+const onlineExpr = (busAlias = 'b') => `CASE WHEN EXISTS (
+  SELECT 1
+  FROM dbo.LocationHistory lh
+  WHERE lh.BusNo = ${busAlias}.BusNo
+    AND lh.RecordedAt > DATEADD(SECOND, -${LIVE_WINDOW_SECONDS}, GETDATE())
+) THEN 1 ELSE 0 END`;
+
+const mapBusForResponse = (bus, { forceOnline = false } = {}) => {
+  const distanceInfo = buildDistanceInfo(bus);
+  const isOnline = forceOnline || bus.IsOnline === 1;
+  const busTimestamp = bus.LastUpdated ? Date.parse(bus.LastUpdated) : Date.now();
+  const fleetNo = getFleetNo(bus.Username);
+
+  return {
+    ...bus,
+    id: `bus_${bus.Username || bus.BusNo}`,
+    busNumber: fleetNo || String(bus.BusNo),
+    registrationNumber: bus.BusNo || '',
+    route: bus.DestinationName || '',
+    location: {
+      lat: bus.CurrentLat || 0,
+      lng: bus.CurrentLng || 0,
+      timestamp: busTimestamp,
+      speed: bus.Speed || 0
+    },
+    status: isOnline ? 'online' : 'offline',
+    updatedAt: busTimestamp,
+    driverName: bus.Username || '',
+    isOnline,
+    IsOnline: isOnline,
+    IsActive: Boolean(bus.IsActive),
+    gpsCount: bus.GPSCount || 0,
+    lastGPSTime: bus.LastGPSTime,
+    trackingMode: distanceInfo.trackingMode,
+    distance: distanceInfo.distance,
+    distanceText: distanceInfo.distanceText ?? distanceInfo.distance,
+    distanceKm: distanceInfo.distanceKm ?? null,
+    etaMinutes: distanceInfo.etaMinutes
+  };
+};
 
 export const getLiveBuses = async (_req, res) => {
   try {
     const result = await executeQuery(
       `
       SELECT
-        BusNo, BusName, Username,
-        CurrentLat, CurrentLng, Speed, LastUpdated,
-        DestinationName, DestinationLat, DestinationLng, SchoolLat, SchoolLng,
-        ISNULL(IsActive, 1) AS IsActive,
-        ${onlineExpr} AS IsOnline
-      FROM dbo.Buses
-      ORDER BY BusNo ASC
+        b.BusNo, b.BusName, b.Username,
+        b.CurrentLat, b.CurrentLng, b.Speed, b.LastUpdated,
+        b.DestinationName, b.DestinationLat, b.DestinationLng, b.SchoolLat, b.SchoolLng,
+        ISNULL(b.IsActive, 1) AS IsActive,
+        ${onlineExpr('b')} AS IsOnline,
+        (SELECT COUNT(*)
+         FROM dbo.LocationHistory lh
+         WHERE lh.BusNo = b.BusNo
+           AND lh.RecordedAt > DATEADD(SECOND, -${LIVE_WINDOW_SECONDS}, GETDATE())) AS GPSCount,
+        (SELECT TOP 1 RecordedAt
+         FROM dbo.LocationHistory lh
+         WHERE lh.BusNo = b.BusNo
+         ORDER BY RecordedAt DESC) AS LastGPSTime
+      FROM dbo.Buses b
+      WHERE EXISTS (
+        SELECT 1
+        FROM dbo.LocationHistory lh
+        WHERE lh.BusNo = b.BusNo
+          AND lh.RecordedAt > DATEADD(SECOND, -${LIVE_WINDOW_SECONDS}, GETDATE())
+      )
+      ORDER BY b.BusNo ASC
       `
     );
 
-    const buses = result.recordset.map((b) => {
-      const distanceInfo = buildDistanceInfo(b);
-      const isOnline = b.IsOnline === 1;  // Convert to boolean
-      const busTimestamp = b.LastUpdated ? Date.parse(b.LastUpdated) : Date.now();
-      const fleetNo = getFleetNo(b.Username);
-      
-      return {
-        // Original database fields
-        ...b,
-        // Fields for App.tsx compatibility
-        id: `bus_${b.Username || b.BusNo}`,
-        busNumber: fleetNo || String(b.BusNo),
-        registrationNumber: b.BusNo || '',
-        route: b.DestinationName || '',
-        location: {
-          lat: b.CurrentLat || 0,
-          lng: b.CurrentLng || 0,
-          timestamp: busTimestamp,
-          speed: b.Speed || 0
-        },
-        status: isOnline ? 'online' : 'offline',
-        updatedAt: busTimestamp,
-        driverName: b.Username || '',
-        isOnline: isOnline,
-        IsOnline: isOnline,
-        IsActive: Boolean(b.IsActive),
-        // Distance info
-        trackingMode: distanceInfo.trackingMode,
-        distance: distanceInfo.distance,
-        distanceText: distanceInfo.distanceText ?? distanceInfo.distance,
-        distanceKm: distanceInfo.distanceKm ?? null,
-        etaMinutes: distanceInfo.etaMinutes
-      };
-    });
-
-    return res.json({ success: true, buses });
+    const buses = result.recordset.map((bus) => mapBusForResponse(bus, { forceOnline: true }));
+    return res.json({ success: true, buses, onlineCount: buses.length });
   } catch (error) {
-    console.error('❌ Error fetching live buses:', error.message);
+    console.error('[getLiveBuses] Failed:', error.message);
     return res.status(500).json({ success: false, error: error.message, buses: [] });
   }
+};
+
+export const getAllBuses = async (_req, res) => {
+  try {
+    const result = await executeQuery(
+      `
+      SELECT
+        b.BusNo, b.BusName, b.Username,
+        b.CurrentLat, b.CurrentLng, b.Speed, b.LastUpdated,
+        b.DestinationName, b.DestinationLat, b.DestinationLng, b.SchoolLat, b.SchoolLng,
+        ISNULL(b.IsActive, 1) AS IsActive,
+        ${onlineExpr('b')} AS IsOnline,
+        (SELECT COUNT(*)
+         FROM dbo.LocationHistory lh
+         WHERE lh.BusNo = b.BusNo
+           AND lh.RecordedAt > DATEADD(SECOND, -${LIVE_WINDOW_SECONDS}, GETDATE())) AS GPSCount,
+        (SELECT TOP 1 RecordedAt
+         FROM dbo.LocationHistory lh
+         WHERE lh.BusNo = b.BusNo
+         ORDER BY RecordedAt DESC) AS LastGPSTime
+      FROM dbo.Buses b
+      ORDER BY
+        CASE WHEN ${onlineExpr('b')} = 1 THEN 0 ELSE 1 END,
+        TRY_CAST(NULLIF(b.Username, '') AS INT),
+        b.BusNo ASC
+      `
+    );
+
+    const buses = result.recordset.map((bus) => mapBusForResponse(bus));
+    return res.json({ success: true, buses, count: buses.length });
+  } catch (error) {
+    console.error('[getAllBuses] Failed:', error.message);
+    return res.status(500).json({ success: false, error: error.message, buses: [] });
+  }
+};
+
+export const getOnlineBuses = async (_req, res) => {
+  return getLiveBuses(_req, res);
 };
 
 export const getBusByNo = async (req, res) => {
@@ -147,7 +220,15 @@ export const getBusByNo = async (req, res) => {
         CurrentLat, CurrentLng, Speed, LastUpdated,
         DestinationName, DestinationLat, DestinationLng, SchoolLat, SchoolLng,
         ISNULL(IsActive, 1) AS IsActive,
-        ${onlineExpr} AS IsOnline
+        ${onlineExpr('dbo.Buses')} AS IsOnline,
+        (SELECT COUNT(*)
+         FROM dbo.LocationHistory lh
+         WHERE lh.BusNo = dbo.Buses.BusNo
+           AND lh.RecordedAt > DATEADD(SECOND, -${LIVE_WINDOW_SECONDS}, GETDATE())) AS GPSCount,
+        (SELECT TOP 1 RecordedAt
+         FROM dbo.LocationHistory lh
+         WHERE lh.BusNo = dbo.Buses.BusNo
+         ORDER BY RecordedAt DESC) AS LastGPSTime
       FROM dbo.Buses
       WHERE BusNo = @busNo OR Username = @busNo OR Username = @usernameLookup
       `,
@@ -158,54 +239,28 @@ export const getBusByNo = async (req, res) => {
       return res.status(404).json({ success: false, error: 'Bus not found' });
     }
 
-    const b = result.recordset[0];
-    const school = getSchoolCoordinates(b);
+    const bus = result.recordset[0];
+    if (bus.IsOnline !== 1) {
+      return res.status(404).json({ success: false, error: 'Bus is offline' });
+    }
+
+    const school = getSchoolCoordinates(bus);
     const trackingMode = getTrackingMode();
     const target =
       trackingMode === 'MORNING'
         ? { ...school, name: 'School' }
         : {
-            lat: b.DestinationLat,
-            lng: b.DestinationLng,
-            name: b.DestinationName || 'Destination'
+            lat: bus.DestinationLat,
+            lng: bus.DestinationLng,
+            name: bus.DestinationName || 'Destination'
           };
-    const distanceInfo = buildDistanceInfo(b);
-    const isOnline = b.IsOnline === 1;
-    const busTimestamp = b.LastUpdated ? Date.parse(b.LastUpdated) : Date.now();
-    const fleetNo = getFleetNo(b.Username);
-
-    const busResponse = {
-      // Original database fields
-      ...b,
-      // Fields for App.tsx compatibility
-      id: `bus_${b.Username || b.BusNo}`,
-      busNumber: fleetNo || String(b.BusNo),
-      registrationNumber: b.BusNo || '',
-      route: b.DestinationName || '',
-      location: {
-        lat: b.CurrentLat || 0,
-        lng: b.CurrentLng || 0,
-        timestamp: busTimestamp,
-        speed: b.Speed || 0
-      },
-      status: isOnline ? 'online' : 'offline',
-      updatedAt: busTimestamp,
-      driverName: b.Username || '',
-      isOnline: isOnline,
-      IsOnline: isOnline,
-      IsActive: Boolean(b.IsActive),
-      // Distance info
-      trackingMode: distanceInfo.trackingMode,
-      distance: distanceInfo.distance,
-      distanceText: distanceInfo.distanceText ?? distanceInfo.distance,
-      distanceKm: distanceInfo.distanceKm ?? null,
-      etaMinutes: distanceInfo.etaMinutes
-    };
+    const distanceInfo = buildDistanceInfo(bus);
+    const busResponse = mapBusForResponse(bus, { forceOnline: true });
 
     return res.json({
       success: true,
       bus: busResponse,
-      online: isOnline,
+      online: true,
       trackingMode,
       target,
       distance: distanceInfo.distance,
@@ -214,43 +269,157 @@ export const getBusByNo = async (req, res) => {
       etaMinutes: distanceInfo.etaMinutes
     });
   } catch (error) {
-    console.error('❌ Error fetching bus:', error.message);
+    console.error('[getBusByNo] Failed:', error.message);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+export const getBusSnapshot = async (req, res) => {
+  try {
+    const { busNo } = req.params;
+    const normalizedLookup = String(busNo || '').trim();
+    const usernameLookup = normalizedLookup.startsWith('bus') ? normalizedLookup : `bus${normalizedLookup}`;
+    const result = await executeQuery(
+      `
+      SELECT TOP 1
+        BusNo, BusName, Username,
+        CurrentLat, CurrentLng, Speed, LastUpdated,
+        DestinationName, DestinationLat, DestinationLng, SchoolLat, SchoolLng,
+        ISNULL(IsActive, 1) AS IsActive,
+        ${onlineExpr('dbo.Buses')} AS IsOnline,
+        (SELECT COUNT(*)
+         FROM dbo.LocationHistory lh
+         WHERE lh.BusNo = dbo.Buses.BusNo
+           AND lh.RecordedAt > DATEADD(SECOND, -${LIVE_WINDOW_SECONDS}, GETDATE())) AS GPSCount,
+        (SELECT TOP 1 RecordedAt
+         FROM dbo.LocationHistory lh
+         WHERE lh.BusNo = dbo.Buses.BusNo
+         ORDER BY RecordedAt DESC) AS LastGPSTime
+      FROM dbo.Buses
+      WHERE BusNo = @busNo OR Username = @busNo OR Username = @usernameLookup
+      `,
+      { busNo: normalizedLookup, usernameLookup }
+    );
+
+    if (!result.recordset.length) {
+      return res.status(404).json({ success: false, error: 'Bus not found' });
+    }
+
+    const bus = result.recordset[0];
+    const trackingMode = getTrackingMode();
+    const target =
+      trackingMode === 'MORNING'
+        ? { ...getSchoolCoordinates(bus), name: 'School' }
+        : {
+            lat: bus.DestinationLat,
+            lng: bus.DestinationLng,
+            name: bus.DestinationName || 'Destination'
+          };
+    const distanceInfo = buildDistanceInfo(bus);
+    const busResponse = mapBusForResponse(bus);
+
+    return res.json({
+      success: true,
+      bus: busResponse,
+      online: bus.IsOnline === 1,
+      trackingMode,
+      target,
+      distance: distanceInfo.distance,
+      distanceText: distanceInfo.distanceText ?? distanceInfo.distance,
+      distanceKm: distanceInfo.distanceKm ?? null,
+      etaMinutes: distanceInfo.etaMinutes
+    });
+  } catch (error) {
+    console.error('[getBusSnapshot] Failed:', error.message);
     return res.status(500).json({ success: false, error: error.message });
   }
 };
 
 export const updateBusLocation = (io) => async (req, res) => {
   try {
-    const { busNo, lat, lng, speed } = req.body || {};
+    const { busNo, lat, lng, latitude, longitude, speed } = req.body || {};
     const tokenBusNo = req.user?.busNo;
-    const effectiveBusNo = String(tokenBusNo || busNo || '');
-    console.log('[updateBusLocation] called', {
-      busNo: effectiveBusNo,
-      hasLat: lat != null,
-      hasLng: lng != null,
-      hasSpeed: speed != null
-    });
-    if (!effectiveBusNo || lat == null || lng == null) {
+    const effectiveBusNo = String(tokenBusNo || busNo || '').trim();
+    const latitudeValue = lat ?? latitude;
+    const longitudeValue = lng ?? longitude;
+
+    if (!effectiveBusNo || latitudeValue == null || longitudeValue == null) {
       return res.status(400).json({ success: false, error: 'busNo, lat, lng are required' });
+    }
+
+    const latNum = Number(latitudeValue);
+    const lngNum = Number(longitudeValue);
+    const speedNum = Number(speed || 0) || 0;
+
+    if (!Number.isFinite(latNum) || !Number.isFinite(lngNum)) {
+      return res.status(400).json({ success: false, error: 'Invalid coordinates' });
     }
 
     const updateResult = await executeQuery(
       `
-      UPDATE dbo.Buses
-      SET CurrentLat = @lat,
-          CurrentLng = @lng,
-          Speed = @speed,
-          LastUpdated = GETDATE()
-      WHERE BusNo = @busNo;
+      BEGIN TRY
+        BEGIN TRANSACTION;
 
-      SELECT TOP 1 Id, Username, BusNo, BusName, DestinationName, DestinationLat, DestinationLng, SchoolLat, SchoolLng
-      FROM dbo.Buses WHERE BusNo = @busNo;
+        UPDATE dbo.Buses
+        SET CurrentLat = @lat,
+            CurrentLng = @lng,
+            Speed = @speed,
+            LastUpdated = GETDATE()
+        WHERE BusNo = @busNo;
+
+        IF @@ROWCOUNT = 0
+        BEGIN
+          THROW 50001, 'Bus not found', 1;
+        END;
+
+        DECLARE @username NVARCHAR(50);
+        DECLARE @busName NVARCHAR(100);
+        DECLARE @destinationName NVARCHAR(150);
+        DECLARE @destinationLat DECIMAL(10, 8);
+        DECLARE @destinationLng DECIMAL(11, 8);
+        DECLARE @schoolLat DECIMAL(10, 8);
+        DECLARE @schoolLng DECIMAL(11, 8);
+
+        SELECT TOP 1
+          @username = Username,
+          @busName = BusName,
+          @destinationName = DestinationName,
+          @destinationLat = DestinationLat,
+          @destinationLng = DestinationLng,
+          @schoolLat = SchoolLat,
+          @schoolLng = SchoolLng
+        FROM dbo.Buses
+        WHERE BusNo = @busNo;
+
+        INSERT INTO dbo.LocationHistory (Username, BusNo, Latitude, Longitude, Speed, RecordedAt)
+        VALUES (@username, @busNo, @lat, @lng, @speed, GETDATE());
+
+        SELECT TOP 1
+          Id,
+          @username AS Username,
+          @busNo AS BusNo,
+          @busName AS BusName,
+          @destinationName AS DestinationName,
+          @destinationLat AS DestinationLat,
+          @destinationLng AS DestinationLng,
+          @schoolLat AS SchoolLat,
+          @schoolLng AS SchoolLng
+        FROM dbo.Buses
+        WHERE BusNo = @busNo;
+
+        COMMIT TRANSACTION;
+      END TRY
+      BEGIN CATCH
+        IF @@TRANCOUNT > 0
+          ROLLBACK TRANSACTION;
+        THROW;
+      END CATCH
       `,
       {
         busNo: effectiveBusNo,
-        lat: Number(lat),
-        lng: Number(lng),
-        speed: Number(speed || 0)
+        lat: latNum,
+        lng: lngNum,
+        speed: speedNum
       }
     );
 
@@ -259,51 +428,19 @@ export const updateBusLocation = (io) => async (req, res) => {
       return res.status(404).json({ success: false, error: 'Bus not found' });
     }
 
-    // Best-effort: also store a location history row.
-    // This should not break live tracking if the history insert fails.
-    try {
-      const speedNum = Number(speed || 0) || 0;
-      // LocationHistory schema in this project uses Username + RecordedAt (see backend/create_table.sql).
-      // Keep fallbacks for older schema variants so live tracking never breaks.
-      try {
-        await executeQuery(
-          `
-          INSERT INTO dbo.LocationHistory (Username, latitude, longitude, speed, RecordedAt)
-          VALUES (@username, @lat, @lng, @speed, GETUTCDATE());
-          `,
-          {
-            username: bus.Username,
-            lat: Number(lat),
-            lng: Number(lng),
-            speed: speedNum
-          }
-        );
-        console.log('[updateBusLocation] LocationHistory inserted', { username: bus.Username });
-      } catch (historyError2) {
-        // Fallback variant: BusNo + Timestamp (older schema)
-        await executeQuery(
-          `
-          INSERT INTO dbo.LocationHistory (BusNo, Latitude, Longitude, Speed, Timestamp)
-          VALUES (@busNo, @lat, @lng, @speed, GETUTCDATE());
-          `,
-          {
-            busNo: bus.BusNo,
-            lat: Number(lat),
-            lng: Number(lng),
-            speed: speedNum
-          }
-        );
-        console.log('[updateBusLocation] LocationHistory inserted (fallback BusNo)', { busNo: bus.BusNo });
-      }
-    } catch (historyError) {
-      console.error('[updateBusLocation] LocationHistory insert failed:', historyError?.message || historyError);
-    }
+    console.log('[updateBusLocation] LocationHistory GPS stored', {
+      username: bus.Username,
+      busNo: bus.BusNo,
+      lat: latNum,
+      lng: lngNum,
+      speed: speedNum
+    });
 
     const distanceInfo = buildDistanceInfo({
       ...bus,
-      CurrentLat: Number(lat),
-      CurrentLng: Number(lng),
-      Speed: Number(speed || 0)
+      CurrentLat: latNum,
+      CurrentLng: lngNum,
+      Speed: speedNum
     });
 
     const payload = {
@@ -312,9 +449,9 @@ export const updateBusLocation = (io) => async (req, res) => {
       username: bus.Username,
       registration: bus.BusNo,
       busName: bus.BusName,
-      lat: Number(lat),
-      lng: Number(lng),
-      speed: Number(speed || 0),
+      lat: latNum,
+      lng: lngNum,
+      speed: speedNum,
       destination: bus.DestinationName,
       destinationLat: bus.DestinationLat,
       destinationLng: bus.DestinationLng,
@@ -334,6 +471,7 @@ export const updateBusLocation = (io) => async (req, res) => {
 
     return res.json({ success: true, payload });
   } catch (error) {
+    console.error('[updateBusLocation] Failed:', error.message);
     return res.status(500).json({ success: false, error: error.message });
   }
 };
@@ -347,18 +485,14 @@ export const getBusHistory = async (req, res) => {
 
     const historyResult = await executeQuery(
       `
-      BEGIN TRY
-        SELECT TOP 25 Latitude, Longitude, Speed, Timestamp AS RecordedAt
-        FROM dbo.LocationHistory
-        WHERE BusNo = @busNo
-        ORDER BY Timestamp DESC;
-      END TRY
-      BEGIN CATCH
-        SELECT TOP 25 latitude AS Latitude, longitude AS Longitude, speed AS Speed, RecordedAt
-        FROM dbo.LocationHistory
-        WHERE Username = @username
-        ORDER BY RecordedAt DESC;
-      END CATCH
+      SELECT TOP 25
+        Latitude,
+        Longitude,
+        Speed,
+        RecordedAt
+      FROM dbo.LocationHistory
+      WHERE BusNo = @busNo OR Username = @username
+      ORDER BY RecordedAt DESC
       `,
       {
         busNo,
@@ -384,20 +518,29 @@ export const getBusHistory = async (req, res) => {
 
 export const disconnectBus = async (req, res) => {
   try {
-    const busNo = String(req.user?.busNo || '');
-    if (!busNo) return res.status(400).json({ success: false, error: 'busNo missing in token' });
+    const busNo = String(req.user?.busNo || '').trim();
+    if (!busNo) {
+      return res.status(400).json({ success: false, error: 'busNo missing in token' });
+    }
 
     await executeQuery(
       `
       UPDATE dbo.Buses
-      SET LastUpdated = DATEADD(HOUR, -2, GETDATE())
+      SET LastUpdated = DATEADD(HOUR, -2, GETDATE()),
+          CurrentLat = COALESCE(SchoolLat, @fallbackSchoolLat),
+          CurrentLng = COALESCE(SchoolLng, @fallbackSchoolLng),
+          Speed = 0
       WHERE BusNo = @busNo
       `,
-      { busNo }
+      {
+        busNo,
+        fallbackSchoolLat: FIXED_SCHOOL_LAT,
+        fallbackSchoolLng: FIXED_SCHOOL_LNG
+      }
     );
-    return res.json({ success: true, message: 'Bus disconnected' });
+
+    return res.json({ success: true, message: 'Bus disconnected and hidden from live tracking' });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message });
   }
 };
-

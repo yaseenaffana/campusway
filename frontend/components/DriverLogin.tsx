@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import schoolLogo from '../school_logo.jpg';
 import { apiClient } from '../services/api';
 import { FLEET_CATALOG, findFleetCatalogItem, normalizeBusNo } from '../data/fleetCatalog';
+import RouteCard from './RouteCard';
 
 interface BusItem {
   busNo: number | string;
@@ -9,6 +10,7 @@ interface BusItem {
   route: string;
   isSpare: boolean;
   isOnline: boolean;
+  meta?: string;
   username?: string;
 }
 
@@ -26,7 +28,9 @@ const FALLBACK_BUSES: BusItem[] = FLEET_CATALOG.map((bus) => ({
   registration: bus.registration,
   route: bus.route,
   isSpare: bus.isSpare,
-  isOnline: false
+  isOnline: false,
+  meta: '',
+  username: `bus${bus.busNo}`
 }));
 
 const DriverLogin: React.FC<Props> = ({ onDriverLogin, onCancel }) => {
@@ -34,6 +38,7 @@ const DriverLogin: React.FC<Props> = ({ onDriverLogin, onCancel }) => {
   const [buses, setBuses] = useState<BusItem[]>([]);
   const [selectedBus, setSelectedBus] = useState<BusItem | null>(null);
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [loginLoading, setLoginLoading] = useState(false);
   const [loginError, setLoginError] = useState('');
   const [isShaking, setIsShaking] = useState(false);
@@ -54,13 +59,22 @@ const DriverLogin: React.FC<Props> = ({ onDriverLogin, onCancel }) => {
             route: b.route || b.DestinationName
           });
           const busNum = catalogItem?.busNo || normalizeBusNo(b.busNumber || b.BusNo || b.Username) || b.BusNo;
+          const backendRoute = String(b.DestinationName || b.Route || b.route || '').trim();
+          const backendRegistration = String(b.registrationNumber || b.Registration || b.BusNo || '').trim();
+          const isSpare =
+            typeof b.IsActive !== 'undefined'
+              ? !Boolean(b.IsActive)
+              : (catalogItem?.isSpare || backendRoute === 'Spare');
+          const effectiveRoute = backendRoute || catalogItem?.route || 'Unknown';
+          const meta = '';
 
           return {
             busNo: busNum || b.BusNo,
-            registration: catalogItem?.registration || b.registrationNumber || b.Registration || b.BusNo,
-            route: catalogItem?.route || b.DestinationName || b.Route || 'Unknown',
-            isSpare: catalogItem?.isSpare || (b.DestinationName || b.Route) === 'Spare',
+            registration: backendRegistration || catalogItem?.registration || b.BusNo,
+            route: effectiveRoute,
+            isSpare,
             isOnline: Boolean(b.isOnline || b.IsOnline),
+            meta,
             username: b.Username
           };
         });
@@ -88,7 +102,8 @@ const DriverLogin: React.FC<Props> = ({ onDriverLogin, onCancel }) => {
     setLoginError('');
     
     try {
-      const email = String(selectedBus.username || selectedBus.registration); // match backend
+      const loginIdentifier = String(selectedBus.username || selectedBus.registration || `bus${selectedBus.busNo}`).trim();
+      const email = loginIdentifier;
       const response = await apiClient.driverLogin(email, password.trim());
       
       if (!response.success) {
@@ -102,7 +117,7 @@ const DriverLogin: React.FC<Props> = ({ onDriverLogin, onCancel }) => {
       });
     } catch (err: any) {
       triggerShake();
-      setLoginError(err.message === 'Failed to fetch' ? 'Cannot reach server. Check connection.' : 'Invalid credentials. Try again.');
+      setLoginError(err.message === 'Failed to fetch' ? 'Cannot reach server. Check connection.' : (err.message || 'Login failed. Try again.'));
     } finally {
       setLoginLoading(false);
     }
@@ -145,24 +160,56 @@ const DriverLogin: React.FC<Props> = ({ onDriverLogin, onCancel }) => {
             <p style={{ fontSize: '14px', color: '#64748b', margin: '0 0 24px 0' }}>Enter your password</p>
 
             <div style={{ marginBottom: '24px' }}>
-              <input
-                type="password"
-                placeholder="Enter password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoFocus
-                style={{
-                  width: '100%',
-                  padding: '16px',
-                  borderRadius: '12px',
-                  border: `2px solid ${loginError ? '#ef4444' : '#e2e8f0'}`,
-                  fontSize: '16px',
-                  outline: 'none',
-                  transition: 'all 0.2s',
-                  boxSizing: 'border-box'
-                }}
-                className={isShaking ? 'shake' : ''}
-              />
+              <div style={{ position: 'relative' }}>
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  placeholder="Enter password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoFocus
+                  style={{
+                    width: '100%',
+                    padding: '16px 48px 16px 16px',
+                    borderRadius: '12px',
+                    border: `2px solid ${loginError ? '#ef4444' : '#e2e8f0'}`,
+                    fontSize: '16px',
+                    outline: 'none',
+                    transition: 'all 0.2s',
+                    boxSizing: 'border-box'
+                  }}
+                  className={isShaking ? 'shake' : ''}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  style={{
+                    position: 'absolute',
+                    right: '12px',
+                    top: '50%',
+                    transform: 'translateY(-50%)',
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    color: '#94a3b8',
+                    padding: '8px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center'
+                  }}
+                >
+                  {showPassword ? (
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+                      <line x1="1" y1="1" x2="23" y2="23"/>
+                    </svg>
+                  ) : (
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                      <circle cx="12" cy="12" r="3"/>
+                    </svg>
+                  )}
+                </button>
+              </div>
               {loginError && <p style={{ color: '#ef4444', fontSize: '12px', marginTop: '8px', fontWeight: '600' }}>{loginError}</p>}
             </div>
 
@@ -180,7 +227,6 @@ const DriverLogin: React.FC<Props> = ({ onDriverLogin, onCancel }) => {
         @keyframes modalOpen { from { opacity: 0; transform: scale(0.9) translateY(20px); } to { opacity: 1; transform: scale(1) translateY(0); } }
         @keyframes shake { 0%,100%{transform:translateX(0);}20%,60%{transform:translateX(-6px);}40%,80%{transform:translateX(6px);} }
         .shake { animation: shake 0.4s ease-in-out; }
-        .bus-card-active:hover { transform: translateY(-2px); border-color: #2563eb !important; box-shadow: 0 10px 20px rgba(37,99,235,0.08) !important; }
       `}</style>
     </div>
   );
@@ -189,23 +235,15 @@ const DriverLogin: React.FC<Props> = ({ onDriverLogin, onCancel }) => {
 const BusGrid: React.FC<{ buses: BusItem[], onBusClick: (bus: BusItem) => void }> = ({ buses, onBusClick }) => (
   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '14px', width: '100%' }}>
     {buses.map((bus, idx) => (
-      <div key={`bus-${bus.busNo}-${idx}`} onClick={() => onBusClick(bus)} style={{ backgroundColor: 'white', border: `1.5px solid ${bus.isOnline ? '#bfdbfe' : '#e2e8f0'}`, borderRadius: '22px', padding: '16px', cursor: bus.isSpare ? 'default' : 'pointer', transition: 'all 0.2s cubic-bezier(0.4,0,0.2,1)', boxSizing: 'border-box', minHeight: '176px', boxShadow: bus.isOnline ? '0 10px 26px rgba(37,99,235,0.10)' : '0 8px 24px rgba(15,23,42,0.05)' }} className={!bus.isSpare ? 'bus-card-active' : ''}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
-          <span style={{ fontSize: '10px', fontWeight: 800, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.16em' }}>Bus Route</span>
-          <span style={{ fontSize: '9px', fontWeight: 800, color: bus.isOnline ? '#1d4ed8' : '#64748b', backgroundColor: bus.isOnline ? '#dbeafe' : '#f1f5f9', borderRadius: '999px', padding: '5px 8px', letterSpacing: '0.12em', textTransform: 'uppercase' }}>
-            {bus.isOnline ? 'Live' : (bus.isSpare ? 'Spare' : 'Ready')}
-          </span>
-        </div>
-        <div style={{ fontSize: '22px', fontWeight: 900, color: '#0f172a', letterSpacing: '-0.8px', lineHeight: 1.05, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-          {bus.route || 'Route not assigned'}
-        </div>
-        <div style={{ marginTop: '16px', fontSize: '12px', color: '#94a3b8', fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase' }}>
-          Bus {bus.busNo}
-        </div>
-        <div style={{ marginTop: '8px', fontSize: '14px', fontWeight: 700, color: '#64748b', lineHeight: 1.35, minHeight: '38px' }}>
-          {bus.isSpare ? 'Reserved spare vehicle' : 'Tap to login and start tracking'}
-        </div>
-      </div>
+      <RouteCard
+        key={`bus-${bus.busNo}-${idx}`}
+        route={bus.route || 'Route not assigned'}
+        busLabel={`Bus ${bus.busNo}`}
+        status={bus.isSpare ? 'spare' : bus.isOnline ? 'live' : 'ready'}
+        meta={bus.meta || ''}
+        disabled={bus.isSpare}
+        onClick={() => onBusClick(bus)}
+      />
     ))}
   </div>
 );

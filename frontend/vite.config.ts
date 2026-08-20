@@ -6,15 +6,16 @@ import react from '@vitejs/plugin-react';
 export default defineConfig(({ mode }) => {
   const envDir = path.resolve(__dirname, '..');
   const env = loadEnv(mode, envDir, '');
-  const defaultProxyTarget = env.DEV_SSL_PFX ? 'https://localhost:4010' : 'http://localhost:4010';
+  const enableDevHttps = env.VITE_DEV_HTTPS === 'true';
+  const defaultProxyTarget = enableDevHttps ? 'https://localhost:4010' : 'http://localhost:4010';
   const proxyTarget = (env.VITE_PROXY_TARGET || env.VITE_API_URL || defaultProxyTarget).replace(/\/$/, '');
-  const sslPfxPath = env.DEV_SSL_PFX ? path.resolve(envDir, env.DEV_SSL_PFX) : '';
-  const httpsConfig = sslPfxPath && fs.existsSync(sslPfxPath)
+  const sslPfxPath = enableDevHttps && env.DEV_SSL_PFX ? path.resolve(envDir, env.DEV_SSL_PFX) : '';
+  const httpsConfig = enableDevHttps && sslPfxPath && fs.existsSync(sslPfxPath)
     ? {
         pfx: fs.readFileSync(sslPfxPath),
         passphrase: env.DEV_SSL_PASSPHRASE || undefined,
       }
-    : true;
+    : enableDevHttps;
 
   return {
     base: '/',

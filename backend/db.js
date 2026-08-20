@@ -1,31 +1,35 @@
 import mssql from 'mssql';
 import dotenv from 'dotenv';
-import { createMockConnection, mockSql } from './mockDatabase.js';
-
 import path from 'path';
 import { fileURLToPath } from 'url';
 
+import { createMockConnection } from './mockDatabase.js';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const repoRoot = path.resolve(__dirname, '..');
 
-dotenv.config({ path: path.join(__dirname, '.env') });
+dotenv.config({ path: path.join(repoRoot, '.env') });
+
+const isProduction = process.env.NODE_ENV === 'production';
+const useMockDb = process.env.DB_USE_MOCK === 'true' && !isProduction;
 
 const dbConfig = {
-  user: process.env.DB_USER || process.env.MSSQL_USER || 'facultyschedule',
+  user: process.env.DB_USER || process.env.MSSQL_USER || '',
   password: process.env.DB_PASSWORD || process.env.MSSQL_PASSWORD || '',
-  server: process.env.DB_SERVER || process.env.MSSQL_SERVER || '103.207.1.87',
-  database: process.env.DB_NAME || process.env.MSSQL_DATABASE || 'facultyschedule',
+  server: process.env.DB_SERVER || process.env.MSSQL_SERVER || '',
+  database: process.env.DB_NAME || process.env.MSSQL_DATABASE || '',
   port: parseInt(process.env.DB_PORT || process.env.MSSQL_PORT || '1433', 10),
   options: {
-    encrypt: false, // Changed from true to false for better compatibility
-    trustServerCertificate: true,
+    encrypt: process.env.DB_ENCRYPT === 'true',
+    trustServerCertificate: process.env.DB_TRUST_SERVER_CERTIFICATE !== 'false',
     enableKeepAlive: true,
     connectTimeout: 15000,
   },
   pool: {
     max: 10,
     min: 0,
-    idleTimeoutMillis: 30000
+    idleTimeoutMillis: 30000,
   },
   requestTimeout: 30000,
 };
@@ -33,96 +37,94 @@ const dbConfig = {
 let pool = null;
 let isMocked = false;
 
-/**
- * Get or create database connection pool
- */
+const validateDbConfig = () => {
+  const requiredKeys = ['user', 'password', 'server', 'database'];
+  const missing = requiredKeys.filter((key) => !String(dbConfig[key] || '').trim());
+
+  if (missing.length > 0) {
+    throw new Error(`Missing database configuration: ${missing.join(', ')}`);
+  }
+};
+
 export const getPool = async (retries = 2) => {
   if (pool && (pool.connected || isMocked)) {
     return pool;
   }
 
-  for (let attempt = 1; attempt <= retries; attempt++) {
+  validateDbConfig();
+
+  for (let attempt = 1; attempt <= retries; attempt += 1) {
     try {
-      console.log(`🔌 Attempting DB connection (${attempt}/${retries})...`);
+      console.log(`[db] Connecting to SQL Server ${dbConfig.server}:${dbConfig.port} (${attempt}/${retries})`);
       pool = new mssql.ConnectionPool(dbConfig);
-      
-      pool.on('error', err => {
-        console.error('❌ Pool error:', err.message);
+
+      pool.on('error', (err) => {
+        console.error('[db] Connection pool error:', err.message);
         pool = null;
       });
 
       await pool.connect();
-      console.log(`✅ SQL Server connected!`);
       isMocked = false;
+      console.log('[db] SQL Server connected');
       return pool;
     } catch (err) {
-      console.error(`⚠️  Connection attempt ${attempt}/${retries} failed:`, err.message);
+      console.error(`[db] Connection attempt ${attempt}/${retries} failed:`, err.message);
       pool = null;
 
       if (attempt < retries) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise((resolve) => setTimeout(resolve, 1000));
       }
     }
   }
 
-  console.warn('📝 Using Mock Database fallback');
+  if (!useMockDb) {
+    throw new Error('Unable to connect to SQL Server. Set DB_USE_MOCK=true only for non-production troubleshooting.');
+  }
+
+  console.warn('[db] Falling back to mock database because DB_USE_MOCK=true');
   isMocked = true;
   pool = createMockConnection();
   return pool;
 };
 
-/**
- * Execute SQL query with parameters
- */
 export const executeQuery = async (query, parameters = {}) => {
   try {
     const currentPool = await getPool();
     const request = currentPool.request();
 
-    // Add parameters
     Object.entries(parameters).forEach(([key, value]) => {
-      // If mocked, it doesn't need type
       if (isMocked) {
         request.input(key, null, value);
-      } else {
-        request.input(key, value);
+        return;
       }
+
+      request.input(key, value);
     });
 
-    const result = await request.query(query);
-    return result;
+    return await request.query(query);
   } catch (err) {
-    console.error('❌ Query execution error:', err.message);
-    if (!isMocked) throw err;
+    console.error('[db] Query execution error:', err.message);
+    if (!isMocked) {
+      throw err;
+    }
     return { recordset: [] };
   }
 };
 
-/**
- * Initialize database - verify connection
- */
 export const initializeDatabase = async () => {
-  try {
-    const result = await executeQuery('SELECT GETDATE() as ServerTime');
-    console.log(`✅ Database initialized. Server Time: ${result.recordset[0]?.ServerTime || 'Mock Time'}`);
-    return true;
-  } catch (err) {
-    console.error('❌ Database initialization failed:', err.message);
-    return false; // Don't crash, let it use mock
-  }
+  const result = await executeQuery('SELECT GETDATE() as ServerTime');
+  console.log(`[db] Database initialized. Server Time: ${result.recordset[0]?.ServerTime || 'Mock Time'}`);
+  return true;
 };
 
-/**
- * Close database connection
- */
 export const closeConnection = async () => {
   if (pool && !isMocked) {
     try {
       await pool.close();
       pool = null;
-      console.log('✅ Database connection closed');
+      console.log('[db] Database connection closed');
     } catch (err) {
-      console.error('❌ Error closing connection:', err.message);
+      console.error('[db] Error closing connection:', err.message);
     }
   }
 };
@@ -132,7 +134,7 @@ export default {
   executeQuery,
   initializeDatabase,
   closeConnection,
-  sql: mssql
+  sql: mssql,
 };
 
 export { mssql as sql };

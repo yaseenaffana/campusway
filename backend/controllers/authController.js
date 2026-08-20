@@ -2,7 +2,9 @@ import bcrypt from 'bcryptjs';
 import { sql, executeQuery } from '../db.js';
 import { signToken } from '../middleware/auth.js';
 
-const DEFAULT_SECONDARY_PASSWORD = process.env.SECONDARY_PASSWORD_DEFAULT || '234567';
+const DEFAULT_SECONDARY_PASSWORD = String(
+  process.env.SECONDARY_PASSWORD_DEFAULT || (process.env.NODE_ENV === 'production' ? '' : '234567')
+).trim();
 
 const safeCompare = async (plain, hashedOrPlain) => {
   if (!hashedOrPlain) return false;
@@ -16,7 +18,10 @@ const safeCompare = async (plain, hashedOrPlain) => {
 export const login = async (req, res) => {
   try {
     const { username, email, busNo, password, role } = req.body || {};
-    const identifier = username || email || busNo;
+    const identifier = String(username || email || busNo || '').trim();
+    const usernameLookup = identifier && !identifier.toLowerCase().startsWith('bus') && /^\d+$/.test(identifier)
+      ? `bus${identifier}`
+      : identifier;
 
     if (!identifier) {
       return res.status(400).json({ success: false, error: 'Username/email/busNo is required' });
@@ -32,9 +37,9 @@ export const login = async (req, res) => {
       `
       SELECT TOP 1 *
       FROM dbo.Buses
-      WHERE Username = @id OR BusNo = @id
+      WHERE Username = @id OR BusNo = @id OR Username = @usernameLookup
       `,
-      { id: String(identifier) }
+      { id: identifier, usernameLookup }
     );
 
     if (!result.recordset.length) {
@@ -43,7 +48,7 @@ export const login = async (req, res) => {
 
     const bus = result.recordset[0];
     const primaryPassword = bus.PasswordHash || bus.Password || null;
-    const secondaryPassword = bus.SecondPassword || DEFAULT_SECONDARY_PASSWORD;
+    const secondaryPassword = bus.SecondPassword || DEFAULT_SECONDARY_PASSWORD || null;
     const legacyPassword = String(bus.BusNo || '').trim();
     const incomingPassword = String(password || '').trim();
 

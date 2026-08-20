@@ -1,23 +1,18 @@
 /**
  * Bus Tracking Service
- * API client for bus tracking features
+ * Legacy compatibility wrapper around the active bus service.
  */
 
-import { getApiUrl } from './api';
+import { buseService } from './busService';
+import { fetchWithApiFallback, readJsonResponse } from './api';
 
-const API_BASE = `${getApiUrl()}/api`;
-
-// Exponential backoff configuration
 const MAX_RETRIES = 3;
-const INITIAL_DELAY = 1000; // 1 second
-const MAX_DELAY = 10000; // 10 seconds
+const INITIAL_DELAY = 1000;
+const MAX_DELAY = 10000;
 
-/**
- * Retry logic with exponential backoff
- */
 async function retryWithBackoff(fn, retries = MAX_RETRIES) {
   let lastError;
-  
+
   for (let i = 0; i < retries; i++) {
     try {
       return await fn();
@@ -25,109 +20,51 @@ async function retryWithBackoff(fn, retries = MAX_RETRIES) {
       lastError = error;
       if (i < retries - 1) {
         const delay = Math.min(INITIAL_DELAY * Math.pow(2, i), MAX_DELAY);
-        await new Promise(resolve => setTimeout(resolve, delay));
+        await new Promise((resolve) => setTimeout(resolve, delay));
       }
     }
   }
-  
+
   throw lastError;
 }
 
-/**
- * Fetch current bus status with enriched data
- * @param {string} busNo - Bus number (e.g., 'BUS-001')
- * @returns {Promise<Object>} Bus status with location, stops, ETA, etc.
- */
 export async function fetchBusStatus(busNo) {
   return retryWithBackoff(async () => {
-    const response = await fetch(`${API_BASE}/bus/${busNo}/status`);
-    
+    const response = await fetchWithApiFallback(`/api/bus/${busNo}`);
+
     if (!response.ok) {
       if (response.status === 404) {
         throw new Error('Bus not found');
       }
       throw new Error(`API error: ${response.status}`);
     }
-    
-    return response.json();
+
+    return readJsonResponse(response);
   });
 }
 
-/**
- * Update bus location
- * @param {string} busNo - Bus number
- * @param {number} routeID - Route ID
- * @param {number} lat - Latitude
- * @param {number} lng - Longitude
- * @param {number} speed - Speed in km/h
- * @param {number} accuracy - GPS accuracy in meters
- * @returns {Promise<Object>} Updated location response
- */
 export async function updateBusLocation(busNo, routeID, lat, lng, speed = 0, accuracy = 0) {
   return retryWithBackoff(async () => {
-    const response = await fetch(`${API_BASE}/bus/location`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        busNo,
-        routeID,
-        lat,
-        lng,
-        speed,
-        accuracy
-      })
+    void routeID;
+    return buseService.updateBusLocation(busNo, {
+      lat,
+      lng,
+      speed,
+      accuracy,
+      timestamp: Date.now()
     });
-    
-    if (!response.ok) {
-      throw new Error(`Failed to update location: ${response.status}`);
-    }
-    
-    return response.json();
   });
 }
 
-/**
- * Get all active buses
- * @returns {Promise<Object>} Array of buses with locations
- */
 export async function fetchActiveBuses() {
-  return retryWithBackoff(async () => {
-    const response = await fetch(`${API_BASE}/buses`);
-    
-    if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
-    }
-    
-    return response.json();
-  });
+  return retryWithBackoff(async () => buseService.getBuses());
 }
 
-/**
- * Calculate distance to specific stop
- * @param {string} busNo - Bus number
- * @param {number} stopID - Stop ID
- * @returns {Promise<Object>} Distance, ETA, and status info
- */
 export async function calculateDistanceToStop(busNo, stopID) {
-  return retryWithBackoff(async () => {
-    const response = await fetch(`${API_BASE}/bus/${busNo}/distance-to/${stopID}`);
-    
-    if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
-    }
-    
-    return response.json();
-  });
+  void stopID;
+  return fetchBusStatus(busNo);
 }
 
-/**
- * Create a polling hook for real-time updates
- * @param {string} busNo - Bus number
- * @param {number} interval - Poll interval in milliseconds (default 3000)
- * @returns {Object} Context manager with methods
- */
 export function createBusPoller(busNo, interval = 3000) {
   let pollTimer = null;
   let isPolling = false;
@@ -140,7 +77,7 @@ export function createBusPoller(busNo, interval = 3000) {
     const poll = async () => {
       try {
         const status = await fetchBusStatus(busNo);
-        subscribers.forEach(cb => cb(status));
+        subscribers.forEach((cb) => cb(status));
         if (onUpdate) onUpdate(status);
       } catch (error) {
         console.error('Polling error:', error);
@@ -148,10 +85,7 @@ export function createBusPoller(busNo, interval = 3000) {
       }
     };
 
-    // Initial fetch immediately
     poll();
-
-    // Then set up interval
     pollTimer = setInterval(poll, interval);
   };
 
@@ -174,51 +108,28 @@ export function createBusPoller(busNo, interval = 3000) {
   return { start, stop, subscribe };
 }
 
-/**
- * Validate bus response data
- * @param {Object} busStatus - Bus status object
- * @returns {boolean} True if valid
- */
 export function validateBusStatus(busStatus) {
   return (
     busStatus &&
-    busStatus.busNo &&
-    busStatus.location &&
-    busStatus.status &&
-    typeof busStatus.location.lat === 'number' &&
-    typeof busStatus.location.lng === 'number'
+    (busStatus.busNo || busStatus.bus?.busNo || busStatus.BusNo) &&
+    (busStatus.location || busStatus.bus) &&
+    (busStatus.status || busStatus.online !== undefined)
   );
 }
 
-/**
- * Calculate distance between two points (Haversine)
- * Note: This is a client-side utility; server already calculates
- * @param {number} lat1
- * @param {number} lon1
- * @param {number} lat2
- * @param {number} lon2
- * @returns {number} Distance in kilometers
- */
 export function haversineDistance(lat1, lon1, lat2, lon2) {
-  const R = 6371; // Earth radius in km
-  const dLat = toRad(lat2 - lat1);
-  const dLng = toRad(lon2 - lon1);
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lon2 - lon1) * Math.PI / 180;
   const a =
     Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+    Math.cos(lat1 * Math.PI / 180) *
+    Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLng / 2) * Math.sin(dLng / 2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return (R * c).toFixed(2);
+  return Number((R * c).toFixed(2));
 }
 
-function toRad(deg) {
-  return deg * (Math.PI / 180);
-}
-
-/**
- * Format distance for display
- * @param {number} km - Distance in kilometers
- * @returns {string} Formatted distance
- */
 export function formatDistance(km) {
   if (km < 1) {
     return `${(km * 1000).toFixed(0)}m`;
@@ -226,11 +137,6 @@ export function formatDistance(km) {
   return `${km.toFixed(1)}km`;
 }
 
-/**
- * Format ETA for display
- * @param {number} minutes - ETA in minutes
- * @returns {string} Formatted ETA
- */
 export function formatETA(minutes) {
   if (minutes < 1) {
     return '< 1 min';
@@ -243,7 +149,6 @@ export function formatETA(minutes) {
   return `${hours}h ${mins}m`;
 }
 
-// Export error types for handling
 export class TrackingError extends Error {
   constructor(message, code) {
     super(message);

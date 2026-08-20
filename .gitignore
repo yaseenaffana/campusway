@@ -26,6 +26,7 @@ dist-ssr
 # CampusWay specific
 node_modules/
 .env
+.env.production
 *.log
 dist/
 certs/

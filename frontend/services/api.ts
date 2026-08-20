@@ -3,7 +3,7 @@ function getEnvUrl(key: 'VITE_API_URL' | 'VITE_SOCKET_URL'): string {
   return typeof value === 'string' ? value.trim().replace(/\/$/, '') : '';
 }
 
-const LOCAL_BACKEND_FALLBACK = 'https://localhost:4010';
+const DEV_LOCAL_BACKEND_FALLBACK = 'http://localhost:4010';
 
 function dedupe(values: Array<string | undefined | null>): string[] {
   return [...new Set(values.filter((value): value is string => Boolean(value)))];
@@ -23,18 +23,20 @@ export function getApiUrlCandidates(): string[] {
   const devProxy = getPreferredBrowserOrigin();
 
   if (import.meta.env.DEV) {
+    if (envUrl) {
+      return [envUrl];
+    }
+
     return dedupe([
       devProxy,
-      browserOrigin,
-      envUrl
+      browserOrigin
     ]);
   }
 
   return dedupe([
     devProxy,
     envUrl,
-    browserOrigin,
-    LOCAL_BACKEND_FALLBACK
+    browserOrigin
   ]);
 }
 
@@ -43,27 +45,47 @@ export function getSocketUrlCandidates(): string[] {
   const browserOrigin = typeof window !== 'undefined' ? window.location.origin : '';
 
   if (import.meta.env.DEV) {
+    if (envUrl) {
+      return [envUrl];
+    }
+
     return dedupe([
       getPreferredBrowserOrigin(),
-      browserOrigin,
-      envUrl
+      browserOrigin
     ]);
   }
 
   return dedupe([
     getPreferredBrowserOrigin(),
     envUrl,
-    browserOrigin,
-    LOCAL_BACKEND_FALLBACK
+    browserOrigin
   ]);
 }
 
 export function getApiUrl(): string {
-  return getApiUrlCandidates()[0] || LOCAL_BACKEND_FALLBACK;
+  if (import.meta.env.DEV) {
+    return getApiUrlCandidates()[0] || DEV_LOCAL_BACKEND_FALLBACK;
+  }
+
+  const resolvedUrl = getApiUrlCandidates()[0];
+  if (!resolvedUrl) {
+    throw new Error('VITE_API_URL is not configured for production builds');
+  }
+
+  return resolvedUrl;
 }
 
 export function getSocketUrl(): string {
-  return getSocketUrlCandidates()[0] || LOCAL_BACKEND_FALLBACK;
+  if (import.meta.env.DEV) {
+    return getSocketUrlCandidates()[0] || DEV_LOCAL_BACKEND_FALLBACK;
+  }
+
+  const resolvedUrl = getSocketUrlCandidates()[0];
+  if (!resolvedUrl) {
+    throw new Error('VITE_SOCKET_URL or VITE_API_URL is not configured for production builds');
+  }
+
+  return resolvedUrl;
 }
 
 export async function readJsonResponse(response: Response) {
@@ -174,13 +196,62 @@ export const apiClient = {
 
   async getBuses() {
     try {
-      const response = await fetchWithApiFallback('/api/buses/live');
+      const response = await fetchWithApiFallback('/api/buses');
       if (!response.ok) return [];
       const data = await readJsonResponse(response);
       return Array.isArray(data) ? data : (data?.buses || []);
     } catch (error) {
       console.error('API Get Buses Error:', error);
       return [];
+    }
+  },
+
+  async adminLogin(username: string, password: string) {
+    try {
+      const response = await fetchWithApiFallback('/api/admin/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+      });
+      const data = await readJsonResponse(response);
+
+      if (!response.ok || !data?.success) {
+        return {
+          success: false,
+          error: data?.error || 'Invalid admin credentials'
+        };
+      }
+
+      if (data.token) {
+        localStorage.setItem('admin_token', data.token);
+      }
+
+      return data;
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Admin login failed'
+      };
+    }
+  },
+
+  async adminLogout() {
+    try {
+      const token = localStorage.getItem('admin_token');
+      const response = await fetchWithApiFallback('/api/admin/logout', {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined
+      });
+
+      await readJsonResponse(response).catch(() => null);
+      localStorage.removeItem('admin_token');
+      return { success: response.ok };
+    } catch (error) {
+      localStorage.removeItem('admin_token');
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Admin logout failed'
+      };
     }
   }
 };

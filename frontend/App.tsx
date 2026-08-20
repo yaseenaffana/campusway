@@ -11,14 +11,17 @@ import MapComponent from './components/MapComponent';
 import AttendanceModule from './components/AttendanceModule';
 import { requestBatteryOptimization, showBrandSpecificInstructions } from './components/BackgroundOptimizationPrompts';
 import { checkinDriver, startTrip, endTrip } from './services/api';
+import { apiClient } from './services/api';
 import DriverLogin from './components/DriverLogin';
 import StudentBusList, { StudentBusCard } from './components/StudentBusList';
 import StudentTrackingPage from './components/StudentTrackingPage';
+import AdminPanel from './components/AdminPanel';
 import collegeLogo from './school_logo.jpg';
 
 
 // Register Native Plugins
 const BackgroundGPS = registerPlugin<any>('BackgroundGPS');
+const hasBackgroundGPSPlugin = () => Capacitor.isNativePlatform() && Capacitor.isPluginAvailable('BackgroundGPS');
 
 
 const App: React.FC = () => {
@@ -42,6 +45,9 @@ const App: React.FC = () => {
   const watchIdRef = useRef<number | null>(null);
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const wakeLockRef = useRef<any>(null);
+  const adminTapCountRef = useRef(0);
+  const adminTapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const adminPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // LOGIN FIX: track the latest login attempt ID to prevent race conditions
   const loginAttemptRef = useRef<number>(0);
@@ -57,6 +63,11 @@ const App: React.FC = () => {
   const [loginError, setLoginError] = useState('');
   const [currentDriver, setCurrentDriver] = useState<DriverProfile | null>(null);
   const [loginTimestamp, setLoginTimestamp] = useState<number | null>(null);
+  const [showAdminLogin, setShowAdminLogin] = useState(false);
+  const [adminUsername, setAdminUsername] = useState('');
+  const [adminPassword, setAdminPassword] = useState('');
+  const [adminError, setAdminError] = useState('');
+  const [adminUser, setAdminUser] = useState<{ username: string; empId: string } | null>(null);
 
   // Alternative route state
   const [alternativeRoute, setAlternativeRoute] = useState<{ id: number, timeSaved: number } | null>(null);
@@ -76,7 +87,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
     // Initial fetch from SQL Server API
-    buseService.getBuses().then(setBuses).catch(err => {
+    buseService.getBuses({ force: true }).then(setBuses).catch(err => {
       console.error('Failed to load buses:', err);
     });
 
@@ -88,13 +99,24 @@ const App: React.FC = () => {
     return () => unsubscribe();
   }, []);
 
+  useEffect(() => {
+    return () => {
+      if (adminTapTimerRef.current) {
+        clearTimeout(adminTapTimerRef.current);
+      }
+      if (adminPressTimerRef.current) {
+        clearTimeout(adminPressTimerRef.current);
+      }
+    };
+  }, []);
+
   // SESSION SECURITY: Listen for single fleet updates if one is selected
   useEffect(() => {
     if (role === 'STUDENT' && selectedBus && isTracking) {
-      // Poll for this specific bus updates
+      // Use a light fallback poll; primary updates come from sockets.
       const interval = setInterval(async () => {
         try {
-          const buses = await buseService.getBuses();
+          const buses = await buseService.getBuses({ force: true });
           const updated = buses.find(b => b.id === selectedBus.id);
           if (updated) {
             setSelectedBus(updated);
@@ -102,7 +124,7 @@ const App: React.FC = () => {
         } catch (err) {
           console.error('Error polling bus:', err);
         }
-      }, 3000);
+      }, 10000);
       return () => clearInterval(interval);
     }
   }, [selectedBus?.id, role, isTracking]);
@@ -163,7 +185,7 @@ const App: React.FC = () => {
     };
 
     checkStatus();
-    const interval = setInterval(checkStatus, 3000);
+    const interval = setInterval(checkStatus, 15000);
     return () => clearInterval(interval);
   }, [role]);
 
@@ -176,15 +198,24 @@ const App: React.FC = () => {
       setIsTracking(false);
     }
 
+    if (role === 'ADMIN') {
+      await apiClient.adminLogout().catch(() => null);
+    }
+
     setRole(null);
     setCurrentDriver(null);
+    setAdminUser(null);
     setSelectedBus(null);
     setIsTracking(false);
     setCurrentLocation(null);
     setLoginTimestamp(null);
     prevDriverLocRef.current = null;
     setShowDriverLogin(false);
+    setShowAdminLogin(false);
     setShowDisconnectConfirm(false);
+    setAdminUsername('');
+    setAdminPassword('');
+    setAdminError('');
   }, [role, selectedBus]);
 
   // Back button and exit logic
@@ -549,7 +580,7 @@ const App: React.FC = () => {
     console.log('🚀 Starting Persistent Native GPS for bus:', bus.busNumber);
 
     try {
-      if (Capacitor.isNativePlatform()) {
+      if (hasBackgroundGPSPlugin()) {
         // 1. Check & Request Location Permissions
         const permStatus = await BackgroundGPS.checkPermissions();
         if (permStatus.location !== 'granted') {
@@ -577,8 +608,26 @@ const App: React.FC = () => {
         // 5. Start the Native Foreground Service
         await BackgroundGPS.startService({ busId: bus.id });
         console.log('✅ Native Background GPS service STARTED');
+      } else if (Capacitor.isNativePlatform()) {
+        const permStatus = await Geolocation.checkPermissions();
+        if (permStatus.location !== 'granted') {
+          const request = await Geolocation.requestPermissions();
+          if (request.location !== 'granted') {
+            setLoginError('Location permission is mandatory');
+            return;
+          }
+        }
+
+        await Geolocation.getCurrentPosition({
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 0
+        });
+
+        setToastMessage('Background GPS plugin missing. Using foreground GPS.');
+        window.setTimeout(() => setToastMessage(null), 2500);
       }
-      
+
       // Update UI state and SQL Server status
       setIsTracking(true);
       const busNo = parseInt(bus.id.replace('bus_', ''));
@@ -586,7 +635,19 @@ const App: React.FC = () => {
       
     } catch (e) {
       console.error('❌ Failed to start Native GPS:', e);
-      setToastMessage('Failed to start GPS service');
+      try {
+        await Geolocation.getCurrentPosition({
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 0
+        });
+
+        setIsTracking(true);
+        await buseService.setDriverOnline(busNo, true);
+        setToastMessage('Foreground GPS started. Background service unavailable.');
+      } catch {
+        setToastMessage('Failed to start GPS service');
+      }
     }
   };
 
@@ -597,7 +658,7 @@ const App: React.FC = () => {
       await buseService.setDriverOnline(busNo, false);
 
       // Stop native background service if on Android
-      if (Capacitor.isNativePlatform()) {
+      if (hasBackgroundGPSPlugin()) {
         await BackgroundGPS.stopService().catch((err: any) =>
           console.error('Failed to stop Background GPS service', err)
         );
@@ -765,7 +826,6 @@ const App: React.FC = () => {
           default:
             setLoginError(result?.error || 'Authentication failed. Please try again.');
         }
-      }
     } catch (error) {
       if (currentAttemptId === loginAttemptRef.current) {
         setLoginError('Network issue. Please try again.');
@@ -884,6 +944,82 @@ const App: React.FC = () => {
     return { lat, lng, timestamp, speed };
   };
 
+  const openAdminAccess = useCallback(() => {
+    setShowAdminLogin(true);
+    setAdminError('');
+  }, []);
+
+  const resetAdminTapSequence = useCallback(() => {
+    adminTapCountRef.current = 0;
+    if (adminTapTimerRef.current) {
+      clearTimeout(adminTapTimerRef.current);
+      adminTapTimerRef.current = null;
+    }
+  }, []);
+
+  const handleAdminIconTap = useCallback(() => {
+    adminTapCountRef.current += 1;
+
+    if (adminTapTimerRef.current) {
+      clearTimeout(adminTapTimerRef.current);
+    }
+
+    adminTapTimerRef.current = setTimeout(() => {
+      adminTapCountRef.current = 0;
+      adminTapTimerRef.current = null;
+    }, 900);
+
+    if (adminTapCountRef.current >= 3) {
+      resetAdminTapSequence();
+      openAdminAccess();
+    }
+  }, [openAdminAccess, resetAdminTapSequence]);
+
+  const startAdminLongPress = useCallback(() => {
+    if (adminPressTimerRef.current) {
+      clearTimeout(adminPressTimerRef.current);
+    }
+
+    adminPressTimerRef.current = setTimeout(() => {
+      openAdminAccess();
+      adminPressTimerRef.current = null;
+    }, 700);
+  }, [openAdminAccess]);
+
+  const cancelAdminLongPress = useCallback(() => {
+    if (adminPressTimerRef.current) {
+      clearTimeout(adminPressTimerRef.current);
+      adminPressTimerRef.current = null;
+    }
+  }, []);
+
+  const handleAdminLogin = async () => {
+    if (!adminUsername.trim() || !adminPassword.trim()) {
+      setAdminError('Username and password are required');
+      return;
+    }
+
+    setIsLoading(true);
+    setAdminError('');
+
+    try {
+      const result = await apiClient.adminLogin(adminUsername.trim(), adminPassword.trim());
+      if (!result?.success) {
+        setAdminError(result?.error || 'Admin login failed');
+        return;
+      }
+
+      setAdminUser(result.admin || { username: adminUsername.trim(), empId: '' });
+      setRole('ADMIN');
+      setShowAdminLogin(false);
+      setAdminPassword('');
+      setToastMessage('Admin panel unlocked');
+      setTimeout(() => setToastMessage(null), 2000);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   if (!role) {
     return (
       <div className="min-h-[100dvh] bg-slate-50 flex items-center justify-center p-4">
@@ -892,7 +1028,15 @@ const App: React.FC = () => {
             <>
               <div className="text-center">
                 <div className="mb-8 flex justify-center">
-                  <div className="h-28 w-28 flex items-center justify-center active:scale-95 transition-all">
+                  <div
+                    className="h-28 w-28 flex items-center justify-center active:scale-95 transition-all cursor-pointer"
+                    onDoubleClick={openAdminAccess}
+                    onClick={handleAdminIconTap}
+                    onTouchStart={startAdminLongPress}
+                    onTouchEnd={cancelAdminLongPress}
+                    onTouchCancel={cancelAdminLongPress}
+                    title="Double-click, triple-tap, or long-press to open admin login"
+                  >
                     <img src={collegeLogo} alt="College Logo" className="w-full h-full object-contain" />
                   </div>
                 </div>
@@ -959,6 +1103,72 @@ const App: React.FC = () => {
                   >
                     Install
                   </button>
+                </div>
+              )}
+
+              {showAdminLogin && (
+                <div className="fixed inset-0 z-[250] flex items-center justify-center p-6 animate-in fade-in duration-300">
+                  <div
+                    className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm"
+                    onClick={() => {
+                      setShowAdminLogin(false);
+                      setAdminPassword('');
+                      setAdminError('');
+                    }}
+                  ></div>
+                  <div className="relative bg-white w-full max-w-[360px] p-8 rounded-[2.5rem] shadow-2xl">
+                    <button
+                      onClick={() => {
+                        setShowAdminLogin(false);
+                        setAdminPassword('');
+                        setAdminError('');
+                      }}
+                      className="absolute top-5 right-5 w-10 h-10 rounded-2xl border border-slate-200 bg-white text-slate-700 flex items-center justify-center active:scale-95 transition-all"
+                      aria-label="Close admin access"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M6 18L18 6M6 6l12 12" /></svg>
+                    </button>
+                    <p className="text-[10px] font-black text-indigo-600 uppercase tracking-widest mb-2">Admin Access</p>
+                    <h3 className="text-2xl font-black text-slate-900 tracking-tight mb-6">Sign In</h3>
+                    <div className="space-y-4">
+                      <input
+                        type="text"
+                        value={adminUsername}
+                        onChange={(e) => setAdminUsername(e.target.value)}
+                        placeholder="Username"
+                        className="w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm font-bold text-slate-900 outline-none"
+                      />
+                      <div className="relative">
+                        <input
+                          type={showPassword ? 'text' : 'password'}
+                          value={adminPassword}
+                          onChange={(e) => setAdminPassword(e.target.value)}
+                          placeholder="Password"
+                          className="w-full rounded-2xl border border-slate-200 px-4 py-3 pr-12 text-sm font-bold text-slate-900 outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowPassword((prev) => !prev)}
+                          className="absolute inset-y-0 right-3 flex items-center text-slate-500"
+                          aria-label={showPassword ? 'Hide password' : 'Show password'}
+                        >
+                          {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                        </button>
+                      </div>
+                      {adminError && (
+                        <div className="rounded-2xl bg-red-50 px-4 py-3 text-xs font-bold text-red-600">
+                          {adminError}
+                        </div>
+                      )}
+                      <button
+                        onClick={handleAdminLogin}
+                        disabled={isLoading}
+                        className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black uppercase tracking-widest active:scale-95 transition-all disabled:opacity-60"
+                      >
+                        {isLoading ? 'Signing In...' : 'Open Admin Panel'}
+                      </button>
+                    </div>
+                  </div>
                 </div>
               )}
             </>
@@ -1029,6 +1239,22 @@ const App: React.FC = () => {
               </div>
             </div>
           )}
+        </div>
+      ) : role === 'ADMIN' ? (
+        <div className="flex-1 relative bg-slate-50">
+          <div className="absolute top-4 right-4 z-20 flex items-center gap-3">
+            <div className="rounded-2xl bg-white/90 px-4 py-2 text-right shadow-sm border border-slate-100">
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Admin</p>
+              <p className="text-sm font-black text-slate-900">{adminUser?.username || 'Administrator'}</p>
+            </div>
+            <button
+              onClick={handleLogout}
+              className="w-11 h-11 bg-white shadow-sm rounded-2xl flex items-center justify-center text-slate-900 active:scale-95 transition-all border border-slate-100"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
+            </button>
+          </div>
+          <AdminPanel />
         </div>
       ) : (
         <div className="flex-1 flex flex-col relative">

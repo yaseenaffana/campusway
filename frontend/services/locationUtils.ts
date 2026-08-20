@@ -23,8 +23,15 @@ export const isBusActive = (bus: any): boolean => {
     if (!bus) return false;
 
     const now = Date.now();
-    const isOnline = bus.status === 'online';
-    const isRecent = bus.updatedAt ? (now - bus.updatedAt) < 15000 : false;
+    const updatedAtMs =
+      typeof bus.updatedAt === 'number'
+        ? bus.updatedAt
+        : Date.parse(bus.updatedAt || bus.LastUpdated || bus.location?.timestamp || '');
+    const isOnline =
+      bus.status === 'online' ||
+      bus.isOnline === true ||
+      bus.IsOnline === true;
+    const isRecent = Number.isFinite(updatedAtMs) ? (now - updatedAtMs) < 15000 : false;
 
     // Flexible check: use bus.location if it exists (Bus type), 
     // otherwise use bus directly (MapLocation type)

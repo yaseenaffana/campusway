@@ -5,6 +5,9 @@ require('dotenv').config();
 
 const app = express();
 const port = process.env.PORT || 3001;
+const ADMIN_USERNAME = String(process.env.ADMIN_USERNAME || 'admin').trim();
+const ADMIN_PASSWORD = String(process.env.ADMIN_PASSWORD || 'admin123').trim();
+const ADMIN_EMP_ID = String(process.env.ADMIN_EMP_ID || 'ADMIN001').trim();
 
 // Middleware - MUST be before any routes
 app.use(cors());
@@ -158,6 +161,36 @@ async function initDB() {
 // 1. Health check
 app.get('/health', (req, res) => {
     res.json({ status: 'ok', time: new Date().toISOString() });
+});
+
+app.post('/api/admin/login', async (req, res) => {
+    try {
+        const username = String(req.body?.username || '').trim();
+        const password = String(req.body?.password || '').trim();
+
+        if (!username || !password) {
+            return res.status(400).json({ success: false, error: 'Username and password are required' });
+        }
+
+        if (username !== ADMIN_USERNAME || password !== ADMIN_PASSWORD) {
+            return res.status(401).json({ success: false, error: 'Invalid admin credentials' });
+        }
+
+        return res.json({
+            success: true,
+            token: `legacy-admin-${Date.now()}`,
+            admin: {
+                username,
+                empId: ADMIN_EMP_ID
+            }
+        });
+    } catch (err) {
+        return res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+app.post('/api/admin/logout', async (_req, res) => {
+    res.json({ success: true });
 });
 
 // 2. Driver login

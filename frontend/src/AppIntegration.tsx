@@ -159,8 +159,8 @@ const HomePage: React.FC<{ onSelectMode: (mode: AppMode) => void }> = ({ onSelec
       <footer className="app-footer">
         <p>MZSJS BUZZ v1.0.0 | Real-Time GPS Bus Tracking</p>
         <p className="server-info">
-          API: {import.meta.env.VITE_API_URL || 'http://localhost:4010'} • Socket.IO: 
-          {import.meta.env.VITE_SOCKET_URL || 'http://localhost:4010'}
+          API: {import.meta.env.VITE_API_URL || getPreferredBrowserOrigin() || 'Not configured'} • Socket.IO: 
+          {import.meta.env.VITE_SOCKET_URL || import.meta.env.VITE_API_URL || getPreferredBrowserOrigin() || 'Not configured'}
         </p>
       </footer>
     </div>

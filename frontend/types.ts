@@ -109,6 +109,10 @@ export interface Coordinates {
 
 export interface BusUpdatePayload {
   registration?: string;
+  busName?: string;
   route?: string;
+  destinationName?: string;
+  destinationLat?: number | string | null;
+  destinationLng?: number | string | null;
   isActive?: boolean;
 }

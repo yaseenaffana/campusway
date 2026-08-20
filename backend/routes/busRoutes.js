@@ -2,9 +2,12 @@ import { Router } from 'express';
 import { checkRole, verifyToken } from '../middleware/auth.js';
 import {
   disconnectBus,
+  getAllBuses,
   getBusByNo,
+  getBusSnapshot,
   getBusHistory,
   getLiveBuses,
+  getOnlineBuses,
   updateBusLocation
 } from '../controllers/busController.js';
 
@@ -12,7 +15,8 @@ const createBusRouter = (io) => {
   const router = Router();
 
   router.get('/buses/live', getLiveBuses);
-  router.get('/buses', getLiveBuses);
+  router.get('/buses/online', getOnlineBuses);
+  router.get('/buses', getAllBuses);
   router.get('/bus/:busNo', getBusByNo);
   router.get('/location/history/:username', getBusHistory);
 
@@ -33,7 +37,7 @@ const createBusRouter = (io) => {
 
   router.get('/location/live/:username', async (req, res) => {
     req.params.busNo = req.params.username;
-    return getBusByNo(req, res);
+    return getBusSnapshot(req, res);
   });
 
   return router;

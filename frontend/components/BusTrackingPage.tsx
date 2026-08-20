@@ -3,22 +3,28 @@ import { MapContainer, Marker, Popup, TileLayer } from 'react-leaflet';
 import L from 'leaflet';
 import '../styles/tracking.css';
 import { getApiUrl } from '../services/api';
+import ColorMapLegend, {
+  createBusIconWithColor,
+  getMarkerColorByStatus,
+  getRouteColorByStatus,
+  createStudentIcon
+} from '../services/colorMap';
 
 const API_URL = getApiUrl();
-
-const busIcon = new L.Icon({
-  iconUrl: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="%237C3AED"><path d="M18 18.5a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zM9 18.5a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zM4 8h16v6H4zm13-4H7v2h10z"/></svg>',
-  iconSize: [32, 32],
-  iconAnchor: [16, 16],
-  popupAnchor: [0, -16]
-});
 
 export default function BusTrackingPage({ busNo = 'BUS-001' }) {
   const [busStatus, setBusStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [mapCenter, setMapCenter] = useState([10.105871781656774, 78.64251386094996]);
+  const [isOnline, setIsOnline] = useState(false);
   const mapRef = useRef(null);
+
+  // Get dynamic bus icon based on status
+  const getBusIcon = () => {
+    const color = getMarkerColorByStatus(isOnline ? 'online' : 'offline');
+    return createBusIconWithColor(color);
+  };
 
   const fetchBusStatus = async () => {
     try {
@@ -30,6 +36,7 @@ export default function BusTrackingPage({ busNo = 'BUS-001' }) {
       const data = await response.json();
       setBusStatus(data);
       setError(null);
+      setIsOnline(true);
 
       const bus = data?.bus;
       if (bus?.CurrentLat != null && bus?.CurrentLng != null) {
@@ -37,6 +44,7 @@ export default function BusTrackingPage({ busNo = 'BUS-001' }) {
       }
     } catch (err) {
       setError(err.message);
+      setIsOnline(false);
       console.error('Error fetching bus status:', err);
     } finally {
       setLoading(false);
@@ -89,12 +97,12 @@ export default function BusTrackingPage({ busNo = 'BUS-001' }) {
           ref={mapRef}
         >
           <TileLayer
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-            attribution="&copy; OpenStreetMap contributors"
+            url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+            attribution="&copy; Esri"
           />
 
           {busPosition && (
-            <Marker position={busPosition} icon={busIcon}>
+            <Marker position={busPosition} icon={getBusIcon()}>
               <Popup>
                 <div className="popup-content">
                   <p className="bus-name">{bus?.BusNo}</p>
@@ -105,6 +113,8 @@ export default function BusTrackingPage({ busNo = 'BUS-001' }) {
               </Popup>
             </Marker>
           )}
+
+          <ColorMapLegend position="top-left" />
         </MapContainer>
       </div>
 

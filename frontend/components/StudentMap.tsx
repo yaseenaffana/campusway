@@ -4,53 +4,18 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { BusLocation, Coordinates } from '../types';
 import { getApiUrl } from '../services/api';
+import ColorMapLegend, { 
+  COLOR_MAP, 
+  createBusIconWithColor, 
+  createStudentIcon,
+  getMarkerColorByStatus,
+  getRouteColorByStatus 
+} from '../services/colorMap';
 
 interface StudentMapProps {
   busNo: number;
   studentLocation: Coordinates | null;
 }
-
-// Custom Icons with improved styling
-const busIcon = L.divIcon({
-  className: 'custom-bus-icon',
-  html: `<div style="
-    position: relative;
-    width: 50px;
-    height: 50px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  ">
-    <div style="
-      position: absolute;
-      width: 50px;
-      height: 50px;
-      background: linear-gradient(135deg, #1a56db 0%, #3b82f6 100%);
-      border-radius: 50% 50% 50% 0%;
-      transform: rotate(-45deg);
-      border: 3px solid white;
-      box-shadow: 0 4px 12px rgba(26, 86, 219, 0.4), 0 0 20px rgba(26, 86, 219, 0.2);
-    "></div>
-    <span style="
-      position: relative;
-      transform: rotate(45deg);
-      font-size: 24px;
-      z-index: 2;
-      filter: drop-shadow(0 2px 4px rgba(0,0,0,0.2));
-    ">🚌</span>
-  </div>`,
-  iconSize: [50, 50],
-  iconAnchor: [25, 50],
-  popupAnchor: [0, -50]
-});
-
-const studentIcon = L.divIcon({
-  className: 'custom-student-icon',
-  html: `<div class="pulse-ring"></div>
-         <div style="background: #10b981; width: 16px; height: 16px; border-radius: 50%; border: 3px solid white; box-shadow: 0 0 10px rgba(16,185,129,0.5);"></div>`,
-  iconSize: [20, 20],
-  iconAnchor: [10, 10],
-});
 
 // Map Controller for Zoom and Panning
 const MapControls = ({ busLocation }: { busLocation: Coordinates | null }) => {
@@ -89,7 +54,26 @@ const StudentMap: React.FC<StudentMapProps> = ({ busNo, studentLocation }) => {
   const [eta, setEta] = useState<number | null>(null);
   const [distance, setDistance] = useState<string | null>(null);
   const [isOnline, setIsOnline] = useState(false);
+  const [busStatus, setBusStatus] = useState<string>('offline');
   const API_URL = getApiUrl();
+
+  // Get dynamic bus icon color based on status
+  const getBusIcon = () => {
+    const color = getMarkerColorByStatus(busStatus);
+    return createBusIconWithColor(color);
+  };
+
+  // Get dynamic route color based on status
+  const getRouteColor = () => {
+    return getRouteColorByStatus(isOnline);
+  };
+
+  // Clear route when bus goes offline
+  useEffect(() => {
+    if (!isOnline) {
+      setRoute([]);
+    }
+  }, [isOnline]);
 
   // Poll for location
   useEffect(() => {
@@ -110,8 +94,10 @@ const StudentMap: React.FC<StudentMapProps> = ({ busNo, studentLocation }) => {
               ...foundBus
             } as any);
             setIsOnline(true);
+            setBusStatus('online');
           } else {
             setIsOnline(false);
+            setBusStatus('offline');
             setBus(null);
             setRoute([]);
           }
@@ -119,6 +105,7 @@ const StudentMap: React.FC<StudentMapProps> = ({ busNo, studentLocation }) => {
       } catch (err) {
         console.error("Error fetching bus location:", err);
         setIsOnline(false);
+        setBusStatus('offline');
       }
     };
 
@@ -203,7 +190,7 @@ const StudentMap: React.FC<StudentMapProps> = ({ busNo, studentLocation }) => {
           </div>
         ) : (
           <div style={{ color: '#ef4444', fontWeight: 'bold', fontSize: '14px' }}>
-            Bus is currently offline
+            ❌ GPS Sharing Stopped
           </div>
         )}
       </div>
@@ -212,11 +199,12 @@ const StudentMap: React.FC<StudentMapProps> = ({ busNo, studentLocation }) => {
       {!isOnline && (
         <div style={{
           position: 'absolute', bottom: '80px', left: '50%', transform: 'translateX(-50%)',
-          zIndex: 1000, background: '#fee2e2', color: '#ef4444', padding: '10px 20px',
-          borderRadius: '30px', fontWeight: 'bold', border: '1px solid #fca5a5',
-          boxShadow: '0 4px 12px rgba(239, 68, 68, 0.2)'
+          zIndex: 1000, background: '#fee2e2', color: '#991b1b', padding: '12px 20px',
+          borderRadius: '30px', fontWeight: '600', border: '1px solid #fca5a5',
+          boxShadow: '0 4px 12px rgba(239, 68, 68, 0.2)',
+          fontSize: '14px'
         }}>
-          ⚠️ Connection lost. Waiting for bus...
+          ⚠️ Bus offline. Driver has ended GPS sharing.
         </div>
       )}
 
@@ -227,25 +215,26 @@ const StudentMap: React.FC<StudentMapProps> = ({ busNo, studentLocation }) => {
         zoomControl={false}
       >
         <TileLayer
-          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+          url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+          attribution='&copy; <a href="https://www.arcgis.com/">Esri</a>'
         />
         
         {isOnline && bus && (
-          <Marker position={[bus.Latitude, bus.Longitude]} icon={busIcon} />
+          <Marker position={[bus.Latitude, bus.Longitude]} icon={getBusIcon()} />
         )}
         
         {studentLocation && (
-          <Marker position={[studentLocation.lat, studentLocation.lng]} icon={studentIcon} />
+          <Marker position={[studentLocation.lat, studentLocation.lng]} icon={createStudentIcon()} />
         )}
 
         {route.length > 0 && (
           <Polyline 
             positions={route} 
-            pathOptions={{ color: '#1a56db', weight: 5, opacity: 0.8 }} 
+            pathOptions={{ color: getRouteColor(), weight: 5, opacity: 0.8 }} 
           />
         )}
 
+        <ColorMapLegend position="top-left" />
         <MapControls busLocation={bus ? { lat: bus.Latitude, lng: bus.Longitude } : null} />
       </MapContainer>
 
