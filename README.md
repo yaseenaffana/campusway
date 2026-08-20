@@ -2,9 +2,9 @@
 
 > A real-time campus bus tracking system built with **React**, **Express**, **Socket.IO**, and **SQL Server**. Track a live fleet of campus buses on an interactive map, with dedicated dashboards for students, drivers, and administrators.
 
-<p align="center">
+<!--<p align="center">
   <a href="#"><strong>🌐 Live Demo</strong></a>
-</p>
+</p>-->
 
 ---
 
@@ -39,11 +39,13 @@ Admins can:
 
 | Live Map |
 |-----------|
-| *(add screenshot here)* |
+|<img width="1123" height="1401" alt="WhatsApp Image 2026-08-20 at 11 45 37 AM (3)" src="https://github.com/user-attachments/assets/7cc335bc-bb6a-4cb1-8a29-09457439fd92" />
+ |
 
 | Driver Dashboard |
 |-----------|
-| *(add screenshot here)* |
+|<img width="1060" height="1484" alt="WhatsApp Image 2026-08-20 at 11 45 37 AM (1)" src="https://github.com/user-attachments/assets/22c8cf32-ae07-4837-a7af-0413a0504e00" />
+|
 
 | Admin Panel |
 |-----------|
